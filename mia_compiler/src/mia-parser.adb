@@ -178,7 +178,7 @@ package body Mia.Parser is
       end Parse_Function;
 
       function Parse_Type_Decl return Mia.Model.Type_Spec is
-         Name : constant String := Expect_Identifier;
+         Name : constant String := Parse_Name;
       begin
          Expect (Tok_Is);
          if Peek (L).Kind = Tok_Left_Paren then

@@ -56,6 +56,35 @@ package body Mia.Generator is
       return To_String (Result);
    end Ada_Lit;
 
+   function Short_Name (Qualified : String) return String is
+      Last_Dot : Natural := 0;
+   begin
+      for I in Qualified'Range loop
+         if Qualified (I) = '.' then
+            Last_Dot := I;
+         end if;
+      end loop;
+      return Qualified (Last_Dot + 1 .. Qualified'Last);
+   end Short_Name;
+
+   function Resolve_Type
+     (Name  : String;
+      Types : Mia.Model.Type_Vectors.Vector)
+      return String
+   is
+   begin
+      for T of Types loop
+         declare
+            Full : constant String := To_String (T.Name);
+         begin
+            if Full = Name or else Short_Name (Full) = Name then
+               return Full;
+            end if;
+         end;
+      end loop;
+      return Name;
+   end Resolve_Type;
+
    function Json_Schema_Type (Ada_Type : String) return String is
       Lower : constant String := To_Lower (Ada_Type);
    begin
@@ -234,12 +263,16 @@ package body Mia.Generator is
       use Mia.Model;
    begin
       for T of Types loop
-         if To_String (T.Name) = Type_Name then
-            case T.Kind is
-               when Enum_Type   => return Schema_For_Enum (T);
-               when Record_Type => return Schema_For_Record (T, Types);
-            end case;
-         end if;
+         declare
+            Full : constant String := To_String (T.Name);
+         begin
+            if Full = Type_Name or else Short_Name (Full) = Type_Name then
+               case T.Kind is
+                  when Enum_Type   => return Schema_For_Enum (T);
+                  when Record_Type => return Schema_For_Record (T, Types);
+               end case;
+            end if;
+         end;
       end loop;
       return "{""type"":""" & Json_Schema_Type (Type_Name) & """}";
    end Schema_For_Type;
@@ -316,9 +349,9 @@ package body Mia.Generator is
             Add (To_String (F.To_Json));
             Add (To_String (F.From_Json));
             Add (To_String (F.Body_Schema));
-            Add (To_String (F.Return_Type));
+            Add (Resolve_Type (To_String (F.Return_Type), Spec.Types));
             for P of F.Parameters loop
-               Add (To_String (P.Type_Name));
+               Add (Resolve_Type (To_String (P.Type_Name), Spec.Types));
             end loop;
          end loop;
       end Collect_Withs;
@@ -353,7 +386,9 @@ package body Mia.Generator is
 
       procedure Write_Handler (Fn : Mia.Model.Function_Spec) is
          Fn_Name      : constant String  := To_String (Fn.Name);
-         Ret_Type     : constant String  := To_String (Fn.Return_Type);
+         Ret_Type     : constant String  :=
+                          Resolve_Type
+                            (To_String (Fn.Return_Type), Spec.Types);
          Path_Tmpl    : constant String  := To_String (Fn.Path);
          Impl_Name    : constant String  := To_String (Fn.Impl);
          To_Json_Fn   : constant String  := To_String (Fn.To_Json);
@@ -379,7 +414,9 @@ package body Mia.Generator is
             for P of Fn.Parameters loop
                declare
                   P_Name : constant String := To_String (P.Name);
-                  P_Type : constant String := To_String (P.Type_Name);
+                  P_Type : constant String :=
+                             Resolve_Type
+                               (To_String (P.Type_Name), Spec.Types);
                begin
                   if From_Body_Name /= ""
                     and then To_Lower (P_Name) = From_Body_Name

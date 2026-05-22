@@ -4,9 +4,9 @@
 
 package Notes with Session => Notes_Impl.Session is
 
-   type Note_Importance is (High, Normal, Low);
+   type Notes.Note_Importance is (High, Normal, Low);
 
-   type Note_Properties is record
+   type Notes.Note_Properties is record
       Author     : String;
       Importance : Note_Importance;
       Category   : String;
