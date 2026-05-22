@@ -90,7 +90,7 @@ package body Mia.Parser is
       begin
          P.Name      := To_Unbounded_String (Expect_Identifier);
          Expect (Tok_Colon);
-         P.Type_Name := To_Unbounded_String (Expect_Identifier);
+         P.Type_Name := To_Unbounded_String (Parse_Name);
          return P;
       end Parse_Param;
 
@@ -114,7 +114,7 @@ package body Mia.Parser is
             Expect (Tok_Right_Paren);
          end if;
          Expect (Tok_Return);
-         F.Return_Type := To_Unbounded_String (Expect_Identifier);
+         F.Return_Type := To_Unbounded_String (Parse_Name);
          Expect (Tok_With);
          loop
             declare

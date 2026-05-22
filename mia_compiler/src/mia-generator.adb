@@ -316,6 +316,10 @@ package body Mia.Generator is
             Add (To_String (F.To_Json));
             Add (To_String (F.From_Json));
             Add (To_String (F.Body_Schema));
+            Add (To_String (F.Return_Type));
+            for P of F.Parameters loop
+               Add (To_String (P.Type_Name));
+            end loop;
          end loop;
       end Collect_Withs;
 
