@@ -6,12 +6,12 @@ package body Mia.Registry is
    use Ada.Strings.Unbounded;
 
    type Route_Info is record
-      Path        : Unbounded_String;
-      Method      : Unbounded_String;
-      Operation   : Unbounded_String;
-      Path_Params : Unbounded_String;
-      Result_Type : Unbounded_String;
-      Body_Schema : Unbounded_String;
+      Path          : Unbounded_String;
+      Method        : Unbounded_String;
+      Operation     : Unbounded_String;
+      Path_Params   : Unbounded_String;
+      Result_Schema : Unbounded_String;
+      Body_Schema   : Unbounded_String;
    end record;
 
    package Route_Vectors is new Ada.Containers.Vectors
@@ -62,9 +62,8 @@ package body Mia.Registry is
                  & Q & "schema" & Q & ":{");
          Append (J, Q & "type" & Q & ":" & Q & "object" & Q & ","
                  & Q & "properties" & Q & ":{");
-         Append (J, Q & "result" & Q & ":{"
-                 & Q & "type" & Q & ":"
-                 & Q & To_String (R.Result_Type) & Q & "}}");
+         Append (J, Q & "result" & Q & ":"
+                 & To_String (R.Result_Schema) & "}}");
          Append (J, "}}}}}}}");
       end loop;
       Append (J, "}}");
@@ -92,23 +91,23 @@ package body Mia.Registry is
    --------------------
 
    procedure Register_Route
-     (Path        : String;
-      Method      : String;
-      Operation   : String;
-      Path_Params : String;
-      Result_Type : String;
-      Body_Schema : String := "")
+     (Path          : String;
+      Method        : String;
+      Operation     : String;
+      Path_Params   : String;
+      Result_Schema : String;
+      Body_Schema   : String := "")
    is
    begin
       Route_Vectors.Append
         (Routes,
          Route_Info'
-           (Path        => To_Unbounded_String (Path),
-            Method      => To_Unbounded_String (Method),
-            Operation   => To_Unbounded_String (Operation),
-            Path_Params => To_Unbounded_String (Path_Params),
-            Result_Type => To_Unbounded_String (Result_Type),
-            Body_Schema => To_Unbounded_String (Body_Schema)));
+           (Path          => To_Unbounded_String (Path),
+            Method        => To_Unbounded_String (Method),
+            Operation     => To_Unbounded_String (Operation),
+            Path_Params   => To_Unbounded_String (Path_Params),
+            Result_Schema => To_Unbounded_String (Result_Schema),
+            Body_Schema   => To_Unbounded_String (Body_Schema)));
    end Register_Route;
 
 end Mia.Registry;

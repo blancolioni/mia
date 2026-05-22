@@ -659,19 +659,25 @@ package body Mia.Generator is
             Pl ("         Operation   => """ & Fn_Name & """,");
             Pl ("         Path_Params => "
                 & Ada_Lit (Params_J) & ",");
-            if Schema_Fn /= "" then
-               Pl ("         Result_Type => """
-                   & Json_Schema_Type (To_String (Fn.Return_Type))
-                   & """,");
-               Pl ("         Body_Schema => "
-                   & Ada_Lit
-                       (Schema_For_Type (Schema_Fn, Spec.Types))
-                   & ");");
-            else
-               Pl ("         Result_Type => """
-                   & Json_Schema_Type (To_String (Fn.Return_Type))
-                   & """);");
-            end if;
+            declare
+               Ret_Schema : constant String :=
+                              Ada_Lit
+                                (Schema_For_Type
+                                   (Resolve_Type
+                                      (To_String (Fn.Return_Type),
+                                       Spec.Types),
+                                    Spec.Types));
+            begin
+               if Schema_Fn /= "" then
+                  Pl ("         Result_Schema => " & Ret_Schema & ",");
+                  Pl ("         Body_Schema   => "
+                      & Ada_Lit
+                          (Schema_For_Type (Schema_Fn, Spec.Types))
+                      & ");");
+               else
+                  Pl ("         Result_Schema => " & Ret_Schema & ");");
+               end if;
+            end;
          end;
       end loop;
       Pl ("   end Register;");
