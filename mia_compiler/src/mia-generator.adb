@@ -310,6 +310,7 @@ package body Mia.Generator is
             end if;
          end Add;
       begin
+         Add (Session_Type_S);
          for F of Spec.Functions loop
             Add (To_String (F.Impl));
             Add (To_String (F.To_Json));

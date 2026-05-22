@@ -1,6 +1,7 @@
 with Ada.Containers.Hashed_Maps;
 with Ada.Numerics.Discrete_Random;
 with Ada.Strings.Unbounded;
+with Ada.Strings.Unbounded.Hash;
 
 package body Mia.Sessions is
 
