@@ -1,0 +1,15 @@
+name = "notes"
+description = "Notes example for Mia"
+version = "0.1.0-dev"
+
+authors = ["Fraser Wilson"]
+maintainers = ["Fraser Wilson <fraser@thewhitelion.eu>"]
+maintainers-logins = ["blancolioni"]
+licenses = "GPL-3.0-or-later"
+website = ""
+tags = ["mia", "api"]
+
+executables = ["notes"]
+
+[[depends-on]]
+aws = "=24.0.0"

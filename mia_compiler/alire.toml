@@ -1,0 +1,12 @@
+name = "mia"
+description = "REST API server binding generator"
+version = "0.1.0-dev"
+
+authors = ["Fraser Wilson"]
+maintainers = ["Fraser Wilson <fraser@thewhitelion.eu>"]
+maintainers-logins = ["blancolioni"]
+licenses = "GPL-3.0-or-later"
+website = ""
+tags = ["rest", "api", "binding"]
+
+executables = ["mia"]

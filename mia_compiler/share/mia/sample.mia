@@ -1,0 +1,8 @@
+package Primes is
+
+   function Is_Prime (Value : Positive) return Boolean
+      with Method => Get,
+           Path   => "is-prime/{value}",
+           Impl   => Sample.Is_Prime;
+
+end Primes;

@@ -1,0 +1,69 @@
+--  Test spec exercising: package-level session, anonymous vs authenticated
+--  routes, GET/POST/PATCH/DELETE methods, path params, query params, and
+--  the full range of primitive return types.
+
+package Notes with Session => Notes_Impl.Session is
+
+   type Note_Importance is (High, Normal, Low);
+
+   type Note_Properties is record
+      Author     : String;
+      Importance : Note_Importance;
+      Category   : String;
+   end record;
+
+   --  Public: authenticate and receive a bearer token
+   function Login (Username : String; Password : String) return String
+      with Method => Post,
+           Path   => "auth/login",
+           Impl   => Notes_Impl.Login,
+           Auth   => Anonymous;
+
+   --  Number of notes owned by the caller (no extra params)
+   function Note_Count return Integer
+      with Method => Get,
+           Path   => "notes/count",
+           Impl   => Notes_Impl.Note_Count;
+
+   --  Title of a specific note (path param)
+   function Get_Title (Note_Id : Positive) return String
+      with Method => Get,
+           Path   => "notes/{note_id}/title",
+           Impl   => Notes_Impl.Get_Title;
+
+   --  Create a note; Title is a query param, returns the new note ID
+   function Create_Note (Title : String) return Positive
+      with Method => Post,
+           Path   => "notes",
+           Impl   => Notes_Impl.Create_Note;
+
+   --  Rename a note; Note_Id in path, Title as query param
+   function Rename_Note (Note_Id : Positive; Title : String) return Boolean
+      with Method => Patch,
+           Path   => "notes/{note_id}",
+           Impl   => Notes_Impl.Rename_Note;
+
+   --  Delete a note; returns True on success
+   function Delete_Note (Note_Id : Positive) return Boolean
+      with Method => Delete,
+           Path   => "notes/{note_id}",
+           Impl   => Notes_Impl.Delete_Note;
+
+   --  Fetch structured properties for a note
+   function Get_Properties (Note_Id : Positive) return Note_Properties
+      with Method  => Get,
+           Path    => "notes/{note_id}/properties",
+           Impl    => Notes_Impl.Get_Properties,
+           To_Json => Notes_Impl.Properties_To_Json;
+
+   --  Replace structured properties for a note (body is JSON)
+   function Set_Properties (Note_Id : Positive; Props : Note_Properties)
+      return Boolean
+      with Method    => Patch,
+           Path      => "notes/{note_id}/properties",
+           Impl      => Notes_Impl.Set_Properties,
+           From_Body => Props,
+           From_Json => Notes_Impl.Properties_From_Json,
+           Schema    => Note_Properties;
+
+end Notes;

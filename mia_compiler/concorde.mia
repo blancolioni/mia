@@ -1,0 +1,8 @@
+package Concorde_Api is
+
+   function Plus (X : Integer; Y : Integer) return Integer
+      with Method => Get,
+           Path   => "plus/{x}/{y}",
+	   Impl   => Concorde.Api.Home.Plus;
+	   
+end Concorde_Api;
