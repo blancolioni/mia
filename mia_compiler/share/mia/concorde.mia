@@ -1,0 +1,30 @@
+package Concorde_Api with Session => Concorde.Sessions.Session_Interface is
+
+   type Concorde.Api.Factions.Faction_Record is
+     record
+        Name       : String;
+     end record;
+     
+   function Login
+     (Faction  : String)
+     return String
+    with Method => Post,
+         Path   => "login",
+         Impl   => Concorde.Api.Home.Login,
+	 Auth   => Anonymous;
+     
+   function Execute_Command
+     (Command : String)
+      return String
+     with Method => Post,
+          Path   => "execute",
+	  Impl   => Concorde.Api.Home.Execute_Command;
+
+   function Get_Faction (Faction_Name : String)
+     return Faction_Record
+     with Method  => Get,
+          Path    => "factions/{faction_name}",
+	  Impl    => Concorde.Api.Factions.Get_Faction,
+	  To_Json => Concorde.Api.Factions.To_Json;
+	  
+end Concorde_Api;

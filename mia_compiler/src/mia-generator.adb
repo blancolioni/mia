@@ -124,27 +124,62 @@ package body Mia.Generator is
       end case;
    end Method_Status;
 
-   --  Build a JSON array of OpenAPI path-parameter objects at code-gen time.
+   function Is_Path_Param
+     (Template   : String;
+      Param_Name : String) return Boolean
+   is
+      Lower_Name : constant String := To_Lower (Param_Name);
+      Start      : Natural         := 0;
+   begin
+      for I in Template'Range loop
+         if Template (I) = '{' then
+            Start := I + 1;
+         elsif Template (I) = '}' and then Start > 0 then
+            if To_Lower (Template (Start .. I - 1)) = Lower_Name then
+               return True;
+            end if;
+            Start := 0;
+         end if;
+      end loop;
+      return False;
+   end Is_Path_Param;
+
+   --  Build a JSON array of OpenAPI parameter objects at code-gen time.
+   --  Path params use "in":"path"; remaining non-body params use "in":"query".
+   --  The body param (From_Body) is omitted — it appears in requestBody.
    function Build_Params_Json
      (Fn : Mia.Model.Function_Spec) return String
    is
-      J       : Unbounded_String;
-      First_P : Boolean := True;
+      J          : Unbounded_String;
+      First_P    : Boolean := True;
+      Path_Tmpl  : constant String := To_String (Fn.Path);
+      Body_Param : constant String := To_Lower (To_String (Fn.From_Body));
    begin
       Append (J, "[");
       for P of Fn.Parameters loop
          declare
-            P_Name : constant String := To_String (P.Name);
-            P_J    : constant String :=
-                       Json_Schema_Type (To_String (P.Type_Name));
+            P_Name  : constant String := To_String (P.Name);
+            P_J     : constant String :=
+                        Json_Schema_Type (To_String (P.Type_Name));
+            In_Path : constant Boolean :=
+                        Is_Path_Param (Path_Tmpl, P_Name);
+            Is_Body : constant Boolean :=
+                        Body_Param /= ""
+                        and then To_Lower (P_Name) = Body_Param;
          begin
-            if not First_P then
-               Append (J, ",");
+            if not Is_Body then
+               if not First_P then
+                  Append (J, ",");
+               end if;
+               First_P := False;
+               Append (J, "{""name"":""" & P_Name & """,");
+               if In_Path then
+                  Append (J, """in"":""path"",""required"":true,");
+               else
+                  Append (J, """in"":""query"",""required"":false,");
+               end if;
+               Append (J, """schema"":{""type"":""" & P_J & """}}");
             end if;
-            First_P := False;
-            Append (J, "{""name"":""" & P_Name & """,");
-            Append (J, """in"":""path"",""required"":true,");
-            Append (J, """schema"":{""type"":""" & P_J & """}}");
          end;
       end loop;
       Append (J, "]");
