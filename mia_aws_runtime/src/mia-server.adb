@@ -301,7 +301,8 @@ package body Mia.Server is
       AWS.Config.Set.Server_Port (Config, 8080);
 
       AWS.Server.Start (WS, Service'Access, Config);
-      AWS.Server.Wait;
+      AWS.Server.Wait (Mode => AWS.Server.Q_Key_Pressed);
+      AWS.Server.Shutdown (WS);
    end Start;
 
    -----------
