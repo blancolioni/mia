@@ -923,7 +923,7 @@ package body Mia.Generator is
       Ada.Text_IO.New_Line (File);
       if Session_Type_S /= "" then
          Pl ("   type Session_Reference is");
-         Pl ("     not null access " & Session_Type_S & "'Class;");
+         Pl ("     not null access all " & Session_Type_S & "'Class;");
          Ada.Text_IO.New_Line (File);
       end if;
 
@@ -1308,9 +1308,6 @@ package body Mia.Generator is
       begin
          Ada.Text_IO.Create (File, Ada.Text_IO.Out_File, Path);
 
-         if Has_String_Fields then
-            Pl ("with Ada.Strings.Unbounded;");
-         end if;
          Pl ("with GNATCOLL.JSON;");
          Ada.Text_IO.New_Line (File);
          Pl ("package body " & Pkg_Name & " is");
@@ -1340,13 +1337,7 @@ package body Mia.Generator is
                      for F of T.Fields loop
                         declare
                            F_Name : constant String := To_String (F.Name);
-                           F_Type : constant String := To_String (F.Type_Name);
-                           Value  : constant String :=
-                                      (if Is_String_Field (F_Type)
-                                       then "Ada.Strings.Unbounded"
-                                            & ".To_String (Self."
-                                            & F_Name & ")"
-                                       else "Self." & F_Name);
+                           Value  : constant String := "Self." & F_Name;
                         begin
                            Pl ("      GNATCOLL.JSON.Set_Field");
                            Pl ("        (Obj, """ & To_Lower (F_Name) & """, "
