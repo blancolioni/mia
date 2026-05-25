@@ -6,12 +6,13 @@ package body Mia.Registry is
    use Ada.Strings.Unbounded;
 
    type Route_Info is record
-      Path          : Unbounded_String;
-      Method        : Unbounded_String;
-      Operation     : Unbounded_String;
-      Path_Params   : Unbounded_String;
-      Result_Schema : Unbounded_String;
-      Body_Schema   : Unbounded_String;
+      Path            : Unbounded_String;
+      Method          : Unbounded_String;
+      Operation       : Unbounded_String;
+      Path_Params     : Unbounded_String;
+      Result_Schema   : Unbounded_String;
+      Allow_Anonymous : Boolean;
+      Body_Schema     : Unbounded_String;
    end record;
 
    package Route_Vectors is new Ada.Containers.Vectors
@@ -25,14 +26,30 @@ package body Mia.Registry is
    -------------------
 
    function Build_Swagger return String is
-      Q     : constant Character := '"';
-      J     : Unbounded_String;
-      First : Boolean := True;
+      Q        : constant Character := '"';
+      J        : Unbounded_String;
+      First    : Boolean := True;
+      Has_Auth : Boolean := False;
    begin
+      for R of Routes loop
+         if not R.Allow_Anonymous then
+            Has_Auth := True;
+            exit;
+         end if;
+      end loop;
+
       Append (J, "{" & Q & "openapi" & Q & ":" & Q & "3.0.0" & Q & ",");
       Append (J, Q & "info" & Q & ":{"
               & Q & "title" & Q & ":" & Q & "API" & Q & ","
               & Q & "version" & Q & ":" & Q & "1.0.0" & Q & "},");
+      if Has_Auth then
+         Append (J, Q & "components" & Q & ":{"
+                 & Q & "securitySchemes" & Q & ":{"
+                 & Q & "bearerAuth" & Q & ":{"
+                 & Q & "type" & Q & ":" & Q & "http" & Q & ","
+                 & Q & "scheme" & Q & ":" & Q & "bearer" & Q
+                 & "}}},");
+      end if;
       Append (J, Q & "paths" & Q & ":{");
       for R of Routes loop
          if not First then
@@ -43,6 +60,15 @@ package body Mia.Registry is
          Append (J, Q & To_String (R.Method) & Q & ":{");
          Append (J, Q & "operationId" & Q & ":"
                  & Q & To_String (R.Operation) & Q & ",");
+         if Has_Auth then
+            if R.Allow_Anonymous then
+               Append (J, Q & "security" & Q & ":[],");
+            else
+               Append (J, Q & "security" & Q & ":["
+                       & "{" & Q & "bearerAuth" & Q & ":[]}"
+                       & "],");
+            end if;
+         end if;
          Append (J, Q & "parameters" & Q & ":"
                  & To_String (R.Path_Params) & ",");
          if Length (R.Body_Schema) > 0 then
@@ -91,23 +117,25 @@ package body Mia.Registry is
    --------------------
 
    procedure Register_Route
-     (Path          : String;
-      Method        : String;
-      Operation     : String;
-      Path_Params   : String;
-      Result_Schema : String;
-      Body_Schema   : String := "")
+     (Path            : String;
+      Method          : String;
+      Operation       : String;
+      Path_Params     : String;
+      Result_Schema   : String;
+      Allow_Anonymous : Boolean := True;
+      Body_Schema     : String  := "")
    is
    begin
       Route_Vectors.Append
         (Routes,
          Route_Info'
-           (Path          => To_Unbounded_String (Path),
-            Method        => To_Unbounded_String (Method),
-            Operation     => To_Unbounded_String (Operation),
-            Path_Params   => To_Unbounded_String (Path_Params),
-            Result_Schema => To_Unbounded_String (Result_Schema),
-            Body_Schema   => To_Unbounded_String (Body_Schema)));
+           (Path            => To_Unbounded_String (Path),
+            Method          => To_Unbounded_String (Method),
+            Operation       => To_Unbounded_String (Operation),
+            Path_Params     => To_Unbounded_String (Path_Params),
+            Result_Schema   => To_Unbounded_String (Result_Schema),
+            Allow_Anonymous => Allow_Anonymous,
+            Body_Schema     => To_Unbounded_String (Body_Schema)));
    end Register_Route;
 
 end Mia.Registry;

@@ -737,7 +737,7 @@ package body Mia.Generator is
             Pl ("         Method      => """
                 & Method_Image (Fn.Method) & """,");
             Pl ("         Operation   => """ & Fn_Name & """,");
-            Pl ("         Path_Params => "
+            Pl ("         Path_Params     => "
                 & Ada_Lit (Params_J) & ",");
             declare
                Ret_Schema : constant String :=
@@ -749,13 +749,17 @@ package body Mia.Generator is
                                     Spec.Types));
             begin
                if Schema_Fn /= "" then
-                  Pl ("         Result_Schema => " & Ret_Schema & ",");
-                  Pl ("         Body_Schema   => "
+                  Pl ("         Result_Schema   => " & Ret_Schema & ",");
+                  Pl ("         Allow_Anonymous => "
+                      & (if Anon then "True" else "False") & ",");
+                  Pl ("         Body_Schema     => "
                       & Ada_Lit
                           (Schema_For_Type (Schema_Fn, Spec.Types))
                       & ");");
                else
-                  Pl ("         Result_Schema => " & Ret_Schema & ");");
+                  Pl ("         Result_Schema   => " & Ret_Schema & ",");
+                  Pl ("         Allow_Anonymous => "
+                      & (if Anon then "True" else "False") & ");");
                end if;
             end;
          end;
