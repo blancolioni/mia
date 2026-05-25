@@ -8,12 +8,68 @@ package body Mia.Generator is
 
    use Ada.Strings.Unbounded;
 
-   --  ---------------------------------------------------------------
-   --  General utilities
-   --  ---------------------------------------------------------------
+   package String_Sets is new Ada.Containers.Ordered_Sets
+     (Element_Type => Unbounded_String,
+      "<"          => Ada.Strings.Unbounded."<",
+      "="          => Ada.Strings.Unbounded."=");
 
    function To_Lower (S : String) return String
      renames Ada.Characters.Handling.To_Lower;
+
+   function Package_To_File (Name : String) return String;
+   function Impl_Package     (Impl : String) return String;
+   function Ada_Lit          (S    : String) return String;
+   function Short_Name       (Qualified : String) return String;
+
+   function Resolve_Type
+     (Name  : String;
+      Types : Mia.Model.Type_Vectors.Vector)
+      return String;
+
+   function Json_Schema_Type (Ada_Type : String) return String;
+   function Method_Image     (M : Mia.Model.Http_Method) return String;
+   function Method_Status    (M : Mia.Model.Http_Method) return String;
+
+   function Placeholder_Of
+     (Template   : String;
+      Param_Name : String) return String;
+
+   function Is_Path_Param
+     (Template   : String;
+      Param_Name : String) return Boolean;
+
+   function Build_Params_Json
+     (Fn : Mia.Model.Function_Spec) return String;
+
+   function Json_Set_Field (Return_Type : String) return String;
+
+   function Schema_For_Type
+     (Type_Name : String;
+      Types     : Mia.Model.Type_Vectors.Vector)
+      return String;
+
+   function Schema_For_Enum
+     (T : Mia.Model.Type_Spec) return String;
+
+   function Schema_For_Record
+     (T     : Mia.Model.Type_Spec;
+      Types : Mia.Model.Type_Vectors.Vector)
+      return String;
+
+   procedure Write_Spec
+     (Pkg        : String;
+      Output_Dir : String;
+      File_Base  : String);
+
+   procedure Write_Body
+     (Spec       : Mia.Model.Package_Spec;
+      Pkg        : String;
+      Output_Dir : String;
+      File_Base  : String);
+
+   --  ---------------------------------------------------------------
+   --  General utilities
+   --  ---------------------------------------------------------------
 
    function Package_To_File (Name : String) return String is
       Result : String := To_Lower (Name);
@@ -124,6 +180,33 @@ package body Mia.Generator is
       end case;
    end Method_Status;
 
+   --  Return the path placeholder name matching an Ada parameter name.
+   function Placeholder_Of
+     (Template   : String;
+      Param_Name : String) return String
+   is
+      Lower_Name : constant String := To_Lower (Param_Name);
+      Start      : Natural         := 0;
+   begin
+      for I in Template'Range loop
+         if Template (I) = '{' then
+            Start := I + 1;
+         elsif Template (I) = '}' and then Start > 0 then
+            declare
+               Placeholder : constant String :=
+                               Template (Start .. I - 1);
+            begin
+               if To_Lower (Placeholder) = Lower_Name then
+                  return Placeholder;
+               end if;
+            end;
+            Start := 0;
+         end if;
+      end loop;
+      --  Not in path — query string or body; use the parameter name as key.
+      return Lower_Name;
+   end Placeholder_Of;
+
    function Is_Path_Param
      (Template   : String;
       Param_Name : String) return Boolean
@@ -191,33 +274,6 @@ package body Mia.Generator is
       return To_String (J);
    end Build_Params_Json;
 
-   --  Return the path placeholder name matching an Ada parameter name.
-   function Placeholder_Of
-     (Template   : String;
-      Param_Name : String) return String
-   is
-      Lower_Name : constant String := To_Lower (Param_Name);
-      Start      : Natural         := 0;
-   begin
-      for I in Template'Range loop
-         if Template (I) = '{' then
-            Start := I + 1;
-         elsif Template (I) = '}' and then Start > 0 then
-            declare
-               Placeholder : constant String :=
-                               Template (Start .. I - 1);
-            begin
-               if To_Lower (Placeholder) = Lower_Name then
-                  return Placeholder;
-               end if;
-            end;
-            Start := 0;
-         end if;
-      end loop;
-      --  Not in path — query string or body; use the parameter name as key.
-      return Lower_Name;
-   end Placeholder_Of;
-
    --  ---------------------------------------------------------------
    --  JSON field expression for a given Ada return type
    --  ---------------------------------------------------------------
@@ -243,12 +299,6 @@ package body Mia.Generator is
    --  ---------------------------------------------------------------
    --  Schema generation from declared types
    --  ---------------------------------------------------------------
-
-   --  Forward declaration for mutual recursion.
-   function Schema_For_Type
-     (Type_Name : String;
-      Types     : Mia.Model.Type_Vectors.Vector)
-      return String;
 
    function Schema_For_Enum
      (T : Mia.Model.Type_Spec) return String
@@ -346,11 +396,6 @@ package body Mia.Generator is
    --  Body file
    --  ---------------------------------------------------------------
 
-   package String_Sets is new Ada.Containers.Ordered_Sets
-     (Element_Type => Unbounded_String,
-      "<"          => Ada.Strings.Unbounded."<",
-      "="          => Ada.Strings.Unbounded."=");
-
    procedure Write_Body
      (Spec       : Mia.Model.Package_Spec;
       Pkg        : String;
@@ -359,16 +404,13 @@ package body Mia.Generator is
    is
       use Mia.Model;
 
-      File  : Ada.Text_IO.File_Type;
-      Path  : constant String :=
-                Ada.Directories.Compose (Output_Dir, File_Base, "adb");
+      File           : Ada.Text_IO.File_Type;
+      Path           : constant String :=
+                         Ada.Directories.Compose (Output_Dir, File_Base, "adb");
       Withs          : String_Sets.Set;
-      Session_Type_S : constant String :=
-                         To_String (Spec.Session_Type);
+      Session_Type_S : constant String := To_String (Spec.Session_Type);
 
-      function Fn_Needs_Auth (Fn : Mia.Model.Function_Spec)
-        return Boolean
-      is
+      function Fn_Needs_Auth (Fn : Mia.Model.Function_Spec) return Boolean is
       begin
          return Session_Type_S /= ""
            and then Fn.Auth /= Mia.Model.Anonymous;
@@ -413,8 +455,7 @@ package body Mia.Generator is
       end Separator;
 
       procedure Write_Handler_Spec (Fn : Mia.Model.Function_Spec) is
-         Handler_Name : constant String :=
-                          "Handle_" & To_String (Fn.Name);
+         Handler_Name : constant String := "Handle_" & To_String (Fn.Name);
       begin
          Pl ("   function " & Handler_Name);
          Pl ("     (Session_Id : String;");
@@ -675,13 +716,12 @@ package body Mia.Generator is
       Pl ("   begin");
       for Fn of Spec.Functions loop
          declare
-            Fn_Name     : constant String  := To_String (Fn.Name);
-            Template    : constant String  := To_String (Fn.Path);
-            Method_S    : constant String  := Method_Status (Fn.Method);
-            Params_J    : constant String  := Build_Params_Json (Fn);
-            Anon        : constant Boolean := not Fn_Needs_Auth (Fn);
-            Schema_Fn   : constant String  :=
-                            To_String (Fn.Body_Schema);
+            Fn_Name   : constant String  := To_String (Fn.Name);
+            Template  : constant String  := To_String (Fn.Path);
+            Method_S  : constant String  := Method_Status (Fn.Method);
+            Params_J  : constant String  := Build_Params_Json (Fn);
+            Anon      : constant Boolean := not Fn_Needs_Auth (Fn);
+            Schema_Fn : constant String  := To_String (Fn.Body_Schema);
          begin
             Pl ("      Mia.Server.Register");
             Pl ("        (Route           => Prefix & ""/"
