@@ -64,7 +64,7 @@ package body Mia.Registry is
                  & Q & "properties" & Q & ":{");
          Append (J, Q & "result" & Q & ":"
                  & To_String (R.Result_Schema) & "}}");
-         Append (J, "}}}}}}}");
+         Append (J, "}}}}}}");
       end loop;
       Append (J, "}}");
       return To_String (J);

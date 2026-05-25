@@ -168,17 +168,22 @@ package body Mia.Generator is
                         and then To_Lower (P_Name) = Body_Param;
          begin
             if not Is_Body then
-               if not First_P then
-                  Append (J, ",");
-               end if;
-               First_P := False;
-               Append (J, "{""name"":""" & P_Name & """,");
-               if In_Path then
-                  Append (J, """in"":""path"",""required"":true,");
-               else
-                  Append (J, """in"":""query"",""required"":false,");
-               end if;
-               Append (J, """schema"":{""type"":""" & P_J & """}}");
+               declare
+                  P_Key : constant String :=
+                            Placeholder_Of (Path_Tmpl, P_Name);
+               begin
+                  if not First_P then
+                     Append (J, ",");
+                  end if;
+                  First_P := False;
+                  Append (J, "{""name"":""" & P_Key & """,");
+                  if In_Path then
+                     Append (J, """in"":""path"",""required"":true,");
+                  else
+                     Append (J, """in"":""query"",""required"":true,");
+                  end if;
+                  Append (J, """schema"":{""type"":""" & P_J & """}}");
+               end;
             end if;
          end;
       end loop;
