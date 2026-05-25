@@ -24,7 +24,8 @@ package Mia.Model is
    type Type_Kind is (Enum_Type, Record_Type);
 
    type Type_Spec (Kind : Type_Kind := Enum_Type) is record
-      Name : Ada.Strings.Unbounded.Unbounded_String;
+      Name    : Ada.Strings.Unbounded.Unbounded_String;
+      To_Json : Ada.Strings.Unbounded.Unbounded_String;
       case Kind is
          when Enum_Type =>
             Literals : String_Vectors.Vector;
@@ -52,9 +53,11 @@ package Mia.Model is
       Name        : Ada.Strings.Unbounded.Unbounded_String;
       Parameters  : Parameter_Vectors.Vector;
       Return_Type : Ada.Strings.Unbounded.Unbounded_String;
+      Is_Array    : Boolean    := False;
       Method      : Http_Method := Get;
       Path        : Ada.Strings.Unbounded.Unbounded_String;
       Impl        : Ada.Strings.Unbounded.Unbounded_String;
+      Scanner     : Ada.Strings.Unbounded.Unbounded_String;
       To_Json     : Ada.Strings.Unbounded.Unbounded_String;
       From_Body   : Ada.Strings.Unbounded.Unbounded_String;
       From_Json   : Ada.Strings.Unbounded.Unbounded_String;

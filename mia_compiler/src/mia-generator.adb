@@ -41,6 +41,12 @@ package body Mia.Generator is
    function Build_Params_Json
      (Fn : Mia.Model.Function_Spec) return String;
 
+   function Resolve_To_Json
+     (Return_Type : String;
+      Fn          : Mia.Model.Function_Spec;
+      Types       : Mia.Model.Type_Vectors.Vector)
+      return String;
+
    function Json_Set_Field (Return_Type : String) return String;
 
    function Schema_For_Type
@@ -140,6 +146,31 @@ package body Mia.Generator is
       end loop;
       return Name;
    end Resolve_Type;
+
+   function Resolve_To_Json
+     (Return_Type : String;
+      Fn          : Mia.Model.Function_Spec;
+      Types       : Mia.Model.Type_Vectors.Vector)
+      return String
+   is
+   begin
+      for T of Types loop
+         declare
+            Full : constant String := To_String (T.Name);
+         begin
+            if Full = Return_Type or else Short_Name (Full) = Return_Type then
+               declare
+                  Tj : constant String := To_String (T.To_Json);
+               begin
+                  if Tj /= "" then
+                     return Tj;
+                  end if;
+               end;
+            end if;
+         end;
+      end loop;
+      return To_String (Fn.To_Json);
+   end Resolve_To_Json;
 
    function Json_Schema_Type (Ada_Type : String) return String is
       Lower : constant String := To_Lower (Ada_Type);
@@ -406,7 +437,8 @@ package body Mia.Generator is
 
       File           : Ada.Text_IO.File_Type;
       Path           : constant String :=
-                         Ada.Directories.Compose (Output_Dir, File_Base, "adb");
+                         Ada.Directories.Compose
+                           (Output_Dir, File_Base, "adb");
       Withs          : String_Sets.Set;
       Session_Type_S : constant String := To_String (Spec.Session_Type);
 
@@ -426,8 +458,12 @@ package body Mia.Generator is
          end Add;
       begin
          Add (Session_Type_S);
+         for T of Spec.Types loop
+            Add (To_String (T.To_Json));
+         end loop;
          for F of Spec.Functions loop
             Add (To_String (F.Impl));
+            Add (To_String (F.Scanner));
             Add (To_String (F.To_Json));
             Add (To_String (F.From_Json));
             Add (To_String (F.Body_Schema));
@@ -454,6 +490,8 @@ package body Mia.Generator is
          Ada.Text_IO.New_Line (File);
       end Separator;
 
+      procedure Write_Array_Handler (Fn : Mia.Model.Function_Spec);
+
       procedure Write_Handler_Spec (Fn : Mia.Model.Function_Spec) is
          Handler_Name : constant String := "Handle_" & To_String (Fn.Name);
       begin
@@ -472,7 +510,8 @@ package body Mia.Generator is
                             (To_String (Fn.Return_Type), Spec.Types);
          Path_Tmpl    : constant String  := To_String (Fn.Path);
          Impl_Name    : constant String  := To_String (Fn.Impl);
-         To_Json_Fn   : constant String  := To_String (Fn.To_Json);
+         To_Json_Fn   : constant String  :=
+                          Resolve_To_Json (Ret_Type, Fn, Spec.Types);
          Has_To_Json  : constant Boolean := To_Json_Fn /= "";
          Has_Session  : constant Boolean := Fn_Needs_Auth (Fn);
          Handler_Name : constant String  := "Handle_" & Fn_Name;
@@ -669,6 +708,160 @@ package body Mia.Generator is
          Ada.Text_IO.New_Line (File);
       end Write_Handler;
 
+      procedure Write_Array_Handler (Fn : Mia.Model.Function_Spec) is
+         Fn_Name      : constant String  := To_String (Fn.Name);
+         Elem_Type    : constant String  :=
+                          Resolve_Type
+                            (To_String (Fn.Return_Type), Spec.Types);
+         Scanner_Name : constant String  := To_String (Fn.Scanner);
+         To_Json_Fn   : constant String  :=
+                          Resolve_To_Json (Elem_Type, Fn, Spec.Types);
+         Has_Session  : constant Boolean := Fn_Needs_Auth (Fn);
+         Handler_Name : constant String  := "Handle_" & Fn_Name;
+         Path_Tmpl    : constant String  := To_String (Fn.Path);
+
+         procedure Put_Sig is
+         begin
+            Pl ("   function " & Handler_Name);
+            Pl ("     (Session_Id : String;");
+            Pl ("      URI        : String;");
+            Pl ("      Parameters : Mia.Server.Service_Parameters)");
+            Pl ("      return AWS.Response.Data");
+         end Put_Sig;
+
+         procedure Emit_Params (Indent : String) is
+         begin
+            for P of Fn.Parameters loop
+               declare
+                  P_Name : constant String := To_String (P.Name);
+                  P_Type : constant String :=
+                             Resolve_Type
+                               (To_String (P.Type_Name), Spec.Types);
+                  Key    : constant String :=
+                             Placeholder_Of (Path_Tmpl, P_Name);
+               begin
+                  if To_Lower (P_Type) = "string" then
+                     Pl (Indent & P_Name & " : constant String :=");
+                     Pl (Indent & "            "
+                         & "Parameters.Value (""" & Key & """);");
+                  else
+                     Pl (Indent & P_Name
+                         & " : constant " & P_Type & " :=");
+                     Pl (Indent & "            "
+                         & P_Type
+                         & "'Value (Parameters.Value ("""
+                         & Key & """));");
+                  end if;
+               end;
+            end loop;
+         end Emit_Params;
+
+         procedure Emit_Scanner_Call (Indent : String) is
+            Call : Unbounded_String :=
+                     To_Unbounded_String (Indent & Scanner_Name & " (");
+            First : Boolean := True;
+         begin
+            if Has_Session then
+               Append (Call, "Session");
+               First := False;
+            end if;
+            for I in Fn.Parameters.First_Index .. Fn.Parameters.Last_Index
+            loop
+               if not First then
+                  Append (Call, ", ");
+               end if;
+               First := False;
+               Append (Call, To_String (Fn.Parameters.Element (I).Name));
+            end loop;
+            if not First then
+               Append (Call, ", ");
+            end if;
+            Append (Call, "Cb'Access);");
+            Pl (To_String (Call));
+         end Emit_Scanner_Call;
+
+         procedure Emit_Cb_And_Tail (Indent : String) is
+         begin
+            Pl (Indent & "Items : GNATCOLL.JSON.JSON_Array;");
+            Ada.Text_IO.New_Line (File);
+            Pl (Indent & "procedure Cb (Element : " & Elem_Type & ") is");
+            Pl (Indent & "begin");
+            if To_Json_Fn /= "" then
+               Pl (Indent & "   GNATCOLL.JSON.Append");
+               Pl (Indent & "     (Items,");
+               Pl (Indent & "      GNATCOLL.JSON.Read"
+                   & " (" & To_Json_Fn & " (Element)));");
+            else
+               Pl (Indent & "   GNATCOLL.JSON.Append");
+               Pl (Indent & "     (Items, GNATCOLL.JSON.Create (Element));");
+            end if;
+            Pl (Indent & "end Cb;");
+         end Emit_Cb_And_Tail;
+
+      begin
+         if To_Json_Fn = "" then
+            raise Generator_Error
+              with "array return type requires To_Json on element type: "
+                   & Elem_Type;
+         end if;
+
+         Separator (Handler_Name);
+         Put_Sig;
+         Pl ("   is");
+
+         if Has_Session then
+            Pl ("      pragma Unreferenced (URI);");
+            Ada.Text_IO.New_Line (File);
+            Pl ("      Raw : constant access"
+                & " Mia.Sessions.Session_Interface'Class :=");
+            Pl ("              Mia.Sessions.Get (Session_Id);");
+            Pl ("   begin");
+            Pl ("      if Raw = null then");
+            Pl ("         return AWS.Response.Build");
+            Pl ("           (""application/json"",");
+            Pl ("            "
+                & Ada_Lit ("{""error"":""unauthorized""}") & ",");
+            Pl ("            AWS.Messages.S401);");
+            Pl ("      end if;");
+            Pl ("      declare");
+            Pl ("         Session : constant not null access "
+                & Session_Type_S & "'Class :=");
+            Pl ("                     "
+                & Session_Type_S & "'Class (Raw.all)'Access;");
+            Emit_Params ("         ");
+            Emit_Cb_And_Tail ("         ");
+            Pl ("      begin");
+            Emit_Scanner_Call ("         ");
+            Pl ("         declare");
+            Pl ("            S : constant String :=");
+            Pl ("                  GNATCOLL.JSON.Write");
+            Pl ("                    (GNATCOLL.JSON.Create (Items));");
+            Pl ("         begin");
+            Pl ("            return AWS.Response.Build");
+            Pl ("              (""application/json"", S);");
+            Pl ("         end;");
+            Pl ("      end;");
+         else
+            Pl ("      pragma Unreferenced (Session_Id, URI);");
+            Ada.Text_IO.New_Line (File);
+            Emit_Params ("      ");
+            Emit_Cb_And_Tail ("      ");
+            Pl ("   begin");
+            Emit_Scanner_Call ("      ");
+            Pl ("      declare");
+            Pl ("         S : constant String :=");
+            Pl ("               GNATCOLL.JSON.Write");
+            Pl ("                 (GNATCOLL.JSON.Create (Items));");
+            Pl ("      begin");
+            Pl ("         return AWS.Response.Build");
+            Pl ("           (""application/json"", S);");
+            Pl ("      end;");
+         end if;
+
+         Pl ("   end " & Handler_Name & ";");
+         Ada.Text_IO.New_Line (File);
+      end Write_Array_Handler;
+
    begin
       Collect_Withs;
       Ada.Text_IO.Create (File, Ada.Text_IO.Out_File, Path);
@@ -680,7 +873,12 @@ package body Mia.Generator is
          Needs_Session : Boolean := False;
       begin
          for Fn of Spec.Functions loop
-            if To_String (Fn.To_Json) = "" then
+            if Fn.Is_Array
+              or else Resolve_To_Json
+                        (Resolve_Type (To_String (Fn.Return_Type),
+                                       Spec.Types),
+                         Fn, Spec.Types) = ""
+            then
                Needs_Json := True;
             end if;
             if Fn_Needs_Auth (Fn) then
@@ -708,7 +906,11 @@ package body Mia.Generator is
          Write_Handler_Spec (Fn);
       end loop;
       for Fn of Spec.Functions loop
-         Write_Handler (Fn);
+         if Fn.Is_Array then
+            Write_Array_Handler (Fn);
+         else
+            Write_Handler (Fn);
+         end if;
       end loop;
 
       Separator ("Register");
@@ -740,13 +942,19 @@ package body Mia.Generator is
             Pl ("         Path_Params     => "
                 & Ada_Lit (Params_J) & ",");
             declare
-               Ret_Schema : constant String :=
-                              Ada_Lit
-                                (Schema_For_Type
-                                   (Resolve_Type
-                                      (To_String (Fn.Return_Type),
-                                       Spec.Types),
-                                    Spec.Types));
+               Elem_Schema : constant String :=
+                               Schema_For_Type
+                                 (Resolve_Type
+                                    (To_String (Fn.Return_Type),
+                                     Spec.Types),
+                                  Spec.Types);
+               Ret_Schema  : constant String :=
+                               Ada_Lit
+                                 (if Fn.Is_Array then
+                                    "{""type"":""array"",""items"":"
+                                    & Elem_Schema & "}"
+                                  else
+                                    Elem_Schema);
             begin
                if Schema_Fn /= "" then
                   Pl ("         Result_Schema   => " & Ret_Schema & ",");

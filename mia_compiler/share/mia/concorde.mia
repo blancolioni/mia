@@ -3,7 +3,8 @@ package Concorde_Api with Session => Concorde.Sessions.Session_Interface is
    type Concorde.Api.Factions.Faction_Record is
      record
         Name       : String;
-     end record;
+     end record
+     with To_Json => Concorde.Api.Factions.To_Json;
      
    function Login
      (Faction  : String)
@@ -24,7 +25,11 @@ package Concorde_Api with Session => Concorde.Sessions.Session_Interface is
      return Faction_Record
      with Method  => Get,
           Path    => "factions/{faction_name}",
-	  Impl    => Concorde.Api.Factions.Get_Faction,
-	  To_Json => Concorde.Api.Factions.To_Json;
+	      Impl    => Concorde.Api.Factions.Get_Faction;
 	  
+    function Get_All_Factions return array of Faction_Record
+       with Method => Get,
+            Path   => "factions",
+            Scanner => Concorde.Api.Factions.Scan_All_Factions;
+
 end Concorde_Api;

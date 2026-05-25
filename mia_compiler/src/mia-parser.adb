@@ -114,7 +114,27 @@ package body Mia.Parser is
             Expect (Tok_Right_Paren);
          end if;
          Expect (Tok_Return);
-         F.Return_Type := To_Unbounded_String (Parse_Name);
+         declare
+            First : constant Token := Peek (L);
+         begin
+            if First.Kind = Tok_Identifier
+              and then Ada.Characters.Handling.To_Lower
+                         (To_String (First.Text)) = "array"
+            then
+               Consume (L);
+               declare
+                  Of_Word : constant String := Expect_Identifier;
+               begin
+                  if Ada.Characters.Handling.To_Lower (Of_Word) /= "of" then
+                     raise Parse_Error with "expected 'of' after 'array'";
+                  end if;
+               end;
+               F.Return_Type := To_Unbounded_String (Parse_Name);
+               F.Is_Array    := True;
+            else
+               F.Return_Type := To_Unbounded_String (Parse_Name);
+            end if;
+         end;
          Expect (Tok_With);
          loop
             declare
@@ -132,6 +152,8 @@ package body Mia.Parser is
                      F.Path := To_Unbounded_String (Val);
                   elsif Lower = "impl" then
                      F.Impl := To_Unbounded_String (Val);
+                  elsif Lower = "scanner" then
+                     F.Scanner := To_Unbounded_String (Val);
                   elsif Lower = "to_json" then
                      F.To_Json := To_Unbounded_String (Val);
                   elsif Lower = "from_body" then
@@ -173,6 +195,12 @@ package body Mia.Parser is
          end if;
          if Length (F.From_Json) > 0 and then Length (F.From_Body) = 0 then
             raise Parse_Error with "From_Json requires From_Body";
+         end if;
+         if F.Is_Array and then Length (F.Scanner) = 0 then
+            raise Parse_Error with "array return type requires Scanner aspect";
+         end if;
+         if not F.Is_Array and then Length (F.Scanner) > 0 then
+            raise Parse_Error with "Scanner aspect requires array return type";
          end if;
          return F;
       end Parse_Function;
@@ -217,6 +245,30 @@ package body Mia.Parser is
                end loop;
                Expect (Tok_End);
                Expect (Tok_Record);
+               if Peek (L).Kind = Tok_With then
+                  Consume (L);
+                  loop
+                     declare
+                        Key   : constant String := Expect_Identifier;
+                        Lower : constant String :=
+                                  Ada.Characters.Handling.To_Lower (Key);
+                     begin
+                        Expect (Tok_Arrow);
+                        declare
+                           Val : constant String := Parse_Aspect_Value;
+                        begin
+                           if Lower = "to_json" then
+                              T.To_Json := To_Unbounded_String (Val);
+                           else
+                              raise Parse_Error
+                                with "unknown type aspect: " & Key;
+                           end if;
+                        end;
+                     end;
+                     exit when Peek (L).Kind /= Tok_Comma;
+                     Consume (L);
+                  end loop;
+               end if;
                return T;
             end;
          else
