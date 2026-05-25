@@ -73,6 +73,11 @@ package body Mia.Generator is
       Output_Dir : String;
       File_Base  : String);
 
+   procedure Write_Type_Package
+     (Spec       : Mia.Model.Package_Spec;
+      Pkg_Name   : String;
+      Output_Dir : String);
+
    --  ---------------------------------------------------------------
    --  General utilities
    --  ---------------------------------------------------------------
@@ -153,6 +158,7 @@ package body Mia.Generator is
       Types       : Mia.Model.Type_Vectors.Vector)
       return String
    is
+      use type Mia.Model.Type_Kind;
    begin
       for T of Types loop
          declare
@@ -166,6 +172,16 @@ package body Mia.Generator is
                      return Tj;
                   end if;
                end;
+               --  Auto-derive To_Json from the type's package for record types
+               if T.Kind = Mia.Model.Record_Type then
+                  declare
+                     Pkg : constant String := Impl_Package (Full);
+                  begin
+                     if Pkg /= "" then
+                        return Pkg & ".To_Json";
+                     end if;
+                  end;
+               end if;
             end if;
          end;
       end loop;
@@ -605,10 +621,8 @@ package body Mia.Generator is
                Pl ("         use GNATCOLL.JSON;");
                Ada.Text_IO.New_Line (File);
             end if;
-            Pl ("         Session : constant not null access "
-                & Session_Type_S & " :=");
-            Pl ("                     "
-                & Session_Type_S & " (Raw.all)'Access;");
+            Pl ("         Session : constant Session_Reference :=");
+            Pl ("                     Session_Reference (Raw);");
             Emit_Params ("         ");
             Pl ("         Result : constant " & Ret_Type & " :=");
             declare
@@ -830,10 +844,8 @@ package body Mia.Generator is
             Pl ("            AWS.Messages.S401);");
             Pl ("      end if;");
             Pl ("      declare");
-            Pl ("         Session : constant not null access "
-                & Session_Type_S & "'Class :=");
-            Pl ("                     "
-                & Session_Type_S & "'Class (Raw.all)'Access;");
+            Pl ("         Session : constant Session_Reference :=");
+            Pl ("                     Session_Reference (Raw);");
             Emit_Params ("         ");
             Emit_Cb_And_Tail ("         ");
             Pl ("      begin");
@@ -909,6 +921,11 @@ package body Mia.Generator is
       Ada.Text_IO.New_Line (File);
       Pl ("package body " & Pkg & ".Server is");
       Ada.Text_IO.New_Line (File);
+      if Session_Type_S /= "" then
+         Pl ("   type Session_Reference is");
+         Pl ("     not null access " & Session_Type_S & "'Class;");
+         Ada.Text_IO.New_Line (File);
+      end if;
 
       for Fn of Spec.Functions loop
          Write_Handler_Spec (Fn);
@@ -995,18 +1012,430 @@ package body Mia.Generator is
    end Write_Body;
 
    --  ---------------------------------------------------------------
+   --  Type package generation
+   --  ---------------------------------------------------------------
+
+   procedure Write_Type_Package
+     (Spec       : Mia.Model.Package_Spec;
+      Pkg_Name   : String;
+      Output_Dir : String)
+   is
+      use Mia.Model;
+
+      File_Base : constant String := Package_To_File (Pkg_Name);
+
+      --  True when the field type is Ada String (stored as Unbounded_String)
+      function Is_String_Field (Field_Type : String) return Boolean is
+      begin
+         return To_Lower (Field_Type) = "string";
+      end Is_String_Field;
+
+      --  Storage type used in the private record body
+      function Storage_Type (Field_Type : String) return String is
+      begin
+         if Is_String_Field (Field_Type) then
+            return "Ada.Strings.Unbounded.Unbounded_String";
+         else
+            return Field_Type;
+         end if;
+      end Storage_Type;
+
+      --  True when the type belongs to the package being generated
+      function Type_In_Pkg (T : Type_Spec) return Boolean is
+      begin
+         return T.Kind = Record_Type
+           and then Impl_Package (To_String (T.Name)) = Pkg_Name;
+      end Type_In_Pkg;
+
+      --  True when any function returns this type (direct or array element)
+      function Type_Needs_To_Json (Full_Name : String) return Boolean is
+         Short : constant String := Short_Name (Full_Name);
+      begin
+         for Fn of Spec.Functions loop
+            declare
+               Ret : constant String := To_String (Fn.Return_Type);
+            begin
+               if Ret = Full_Name or else Ret = Short then
+                  return True;
+               end if;
+            end;
+         end loop;
+         return False;
+      end Type_Needs_To_Json;
+
+      --  True when any function takes this type as a parameter
+      function Type_Needs_From_Json (Full_Name : String) return Boolean is
+         Short : constant String := Short_Name (Full_Name);
+      begin
+         for Fn of Spec.Functions loop
+            for P of Fn.Parameters loop
+               declare
+                  Pt : constant String := To_String (P.Type_Name);
+               begin
+                  if Pt = Full_Name or else Pt = Short then
+                     return True;
+                  end if;
+               end;
+            end loop;
+         end loop;
+         return False;
+      end Type_Needs_From_Json;
+
+      --  True when any type in this package has a String field
+      function Has_String_Fields return Boolean is
+      begin
+         for T of Spec.Types loop
+            if Type_In_Pkg (T) then
+               for F of T.Fields loop
+                  if Is_String_Field (To_String (F.Type_Name)) then
+                     return True;
+                  end if;
+               end loop;
+            end if;
+         end loop;
+         return False;
+      end Has_String_Fields;
+
+      --  True when any type in this package needs To_Json or From_Json
+      function Needs_Body return Boolean is
+      begin
+         for T of Spec.Types loop
+            if Type_In_Pkg (T) then
+               declare
+                  Full : constant String := To_String (T.Name);
+               begin
+                  if Type_Needs_To_Json (Full)
+                    or else Type_Needs_From_Json (Full)
+                  then
+                     return True;
+                  end if;
+               end;
+            end if;
+         end loop;
+         return False;
+      end Needs_Body;
+
+      --  Emit parameter declarations for Create, one line per field
+      procedure Emit_Param_List
+        (File   : Ada.Text_IO.File_Type;
+         Fields : Type_Field_Vectors.Vector)
+      is
+         Last : constant Natural :=
+                  (if Fields.Is_Empty then 0 else Fields.Last_Index);
+      begin
+         for I in Fields.First_Index .. Fields.Last_Index loop
+            declare
+               F       : constant Type_Field := Fields.Element (I);
+               F_Name  : constant String     := To_String (F.Name);
+               F_Type  : constant String     := To_String (F.Type_Name);
+               Prefix  : constant String     :=
+                           (if I = Fields.First_Index
+                            then "     (" else "      ");
+               Suffix  : constant String     :=
+                           (if I = Last then ")" else ";");
+            begin
+               Ada.Text_IO.Put_Line
+                 (File, Prefix & F_Name & " : " & F_Type & Suffix);
+            end;
+         end loop;
+      end Emit_Param_List;
+
+      --  ---------------------------------------------------------------
+      --  Spec file
+      --  ---------------------------------------------------------------
+
+      procedure Emit_Spec is
+         File : Ada.Text_IO.File_Type;
+         Path : constant String :=
+                  Ada.Directories.Compose (Output_Dir, File_Base, "ads");
+
+         procedure Pl (S : String) is
+         begin
+            Ada.Text_IO.Put_Line (File, S);
+         end Pl;
+
+      begin
+         Ada.Text_IO.Create (File, Ada.Text_IO.Out_File, Path);
+
+         if Has_String_Fields then
+            Pl ("with Ada.Strings.Unbounded;");
+            Ada.Text_IO.New_Line (File);
+         end if;
+         Pl ("package " & Pkg_Name & " is");
+
+         --  Visible part: one block per type
+         for T of Spec.Types loop
+            if Type_In_Pkg (T) then
+               declare
+                  Type_Name    : constant String  :=
+                                   Short_Name (To_String (T.Name));
+                  Full_Name    : constant String  := To_String (T.Name);
+                  Needs_To_J   : constant Boolean :=
+                                   Type_Needs_To_Json (Full_Name);
+                  Needs_From_J : constant Boolean :=
+                                   Type_Needs_From_Json (Full_Name);
+               begin
+                  Ada.Text_IO.New_Line (File);
+                  Pl ("   type " & Type_Name & " is tagged private;");
+                  Ada.Text_IO.New_Line (File);
+
+                  --  Create
+                  Pl ("   function Create");
+                  Emit_Param_List (File, T.Fields);
+                  Pl ("      return " & Type_Name & ";");
+                  Ada.Text_IO.New_Line (File);
+
+                  --  Accessors
+                  for F of T.Fields loop
+                     declare
+                        F_Name : constant String := To_String (F.Name);
+                        F_Type : constant String := To_String (F.Type_Name);
+                     begin
+                        Pl ("   function " & F_Name
+                            & " (Self : " & Type_Name
+                            & ") return " & F_Type & ";");
+                     end;
+                  end loop;
+
+                  --  To_Json / From_Json declarations
+                  if Needs_To_J or else Needs_From_J then
+                     Ada.Text_IO.New_Line (File);
+                  end if;
+                  if Needs_To_J then
+                     Pl ("   function To_Json"
+                         & " (Self : " & Type_Name & ") return String;");
+                  end if;
+                  if Needs_From_J then
+                     Pl ("   function From_Json"
+                         & " (Json : String) return " & Type_Name & ";");
+                  end if;
+               end;
+            end if;
+         end loop;
+
+         --  Private part: full type + expression function completions
+         Ada.Text_IO.New_Line (File);
+         Pl ("private");
+
+         for T of Spec.Types loop
+            if Type_In_Pkg (T) then
+               declare
+                  Type_Name : constant String :=
+                                Short_Name (To_String (T.Name));
+                  Last      : constant Natural :=
+                                (if T.Fields.Is_Empty then 0
+                                 else T.Fields.Last_Index);
+               begin
+                  Ada.Text_IO.New_Line (File);
+
+                  --  Full record declaration
+                  Pl ("   type " & Type_Name & " is tagged record");
+                  for F of T.Fields loop
+                     Pl ("      " & To_String (F.Name) & " : "
+                         & Storage_Type (To_String (F.Type_Name)) & ";");
+                  end loop;
+                  Pl ("   end record;");
+                  Ada.Text_IO.New_Line (File);
+
+                  --  Create expression function
+                  Pl ("   function Create");
+                  Emit_Param_List (File, T.Fields);
+                  Pl ("      return " & Type_Name);
+                  Pl ("   is (" & Type_Name & "'");
+                  for I in T.Fields.First_Index .. T.Fields.Last_Index loop
+                     declare
+                        F       : constant Type_Field := T.Fields.Element (I);
+                        F_Name  : constant String     := To_String (F.Name);
+                        F_Type  : constant String     :=
+                                    To_String (F.Type_Name);
+                        Is_Last : constant Boolean    := (I = Last);
+                        Init    : constant String     :=
+                                    (if Is_String_Field (F_Type)
+                                     then "Ada.Strings.Unbounded"
+                                          & ".To_Unbounded_String ("
+                                          & F_Name & ")"
+                                     else F_Name);
+                        Prefix  : constant String     :=
+                                    (if I = T.Fields.First_Index
+                                     then "         (" else "          ");
+                        Suffix  : constant String     :=
+                                    (if Is_Last then "));" else ",");
+                     begin
+                        Pl (Prefix & F_Name & " => " & Init & Suffix);
+                     end;
+                  end loop;
+                  Ada.Text_IO.New_Line (File);
+
+                  --  Accessor expression functions
+                  for F of T.Fields loop
+                     declare
+                        F_Name : constant String := To_String (F.Name);
+                        F_Type : constant String := To_String (F.Type_Name);
+                        Expr   : constant String :=
+                                   (if Is_String_Field (F_Type)
+                                    then "Ada.Strings.Unbounded"
+                                         & ".To_String (Self." & F_Name & ")"
+                                    else "Self." & F_Name);
+                     begin
+                        Pl ("   function " & F_Name
+                            & " (Self : " & Type_Name & ") return " & F_Type);
+                        Pl ("   is (" & Expr & ");");
+                     end;
+                  end loop;
+               end;
+            end if;
+         end loop;
+
+         Ada.Text_IO.New_Line (File);
+         Pl ("end " & Pkg_Name & ";");
+         Ada.Text_IO.Close (File);
+      end Emit_Spec;
+
+      --  ---------------------------------------------------------------
+      --  Body file (To_Json and From_Json implementations)
+      --  ---------------------------------------------------------------
+
+      procedure Emit_Body is
+         File : Ada.Text_IO.File_Type;
+         Path : constant String :=
+                  Ada.Directories.Compose (Output_Dir, File_Base, "adb");
+
+         procedure Pl (S : String) is
+         begin
+            Ada.Text_IO.Put_Line (File, S);
+         end Pl;
+
+      begin
+         Ada.Text_IO.Create (File, Ada.Text_IO.Out_File, Path);
+
+         if Has_String_Fields then
+            Pl ("with Ada.Strings.Unbounded;");
+         end if;
+         Pl ("with GNATCOLL.JSON;");
+         Ada.Text_IO.New_Line (File);
+         Pl ("package body " & Pkg_Name & " is");
+
+         for T of Spec.Types loop
+            if Type_In_Pkg (T) then
+               declare
+                  Type_Name    : constant String  :=
+                                   Short_Name (To_String (T.Name));
+                  Full_Name    : constant String  := To_String (T.Name);
+                  Needs_To_J   : constant Boolean :=
+                                   Type_Needs_To_Json (Full_Name);
+                  Needs_From_J : constant Boolean :=
+                                   Type_Needs_From_Json (Full_Name);
+                  Last         : constant Natural :=
+                                   (if T.Fields.Is_Empty then 0
+                                    else T.Fields.Last_Index);
+               begin
+                  --  To_Json
+                  if Needs_To_J then
+                     Ada.Text_IO.New_Line (File);
+                     Pl ("   function To_Json"
+                         & " (Self : " & Type_Name & ") return String is");
+                     Pl ("      Obj : constant GNATCOLL.JSON.JSON_Value :=");
+                     Pl ("              GNATCOLL.JSON.Create_Object;");
+                     Pl ("   begin");
+                     for F of T.Fields loop
+                        declare
+                           F_Name : constant String := To_String (F.Name);
+                           F_Type : constant String := To_String (F.Type_Name);
+                           Value  : constant String :=
+                                      (if Is_String_Field (F_Type)
+                                       then "Ada.Strings.Unbounded"
+                                            & ".To_String (Self."
+                                            & F_Name & ")"
+                                       else "Self." & F_Name);
+                        begin
+                           Pl ("      GNATCOLL.JSON.Set_Field");
+                           Pl ("        (Obj, """ & To_Lower (F_Name) & """, "
+                               & Value & ");");
+                        end;
+                     end loop;
+                     Pl ("      return GNATCOLL.JSON.Write (Obj);");
+                     Pl ("   end To_Json;");
+                  end if;
+
+                  --  From_Json
+                  if Needs_From_J then
+                     Ada.Text_IO.New_Line (File);
+                     Pl ("   function From_Json"
+                         & " (Json : String) return " & Type_Name & " is");
+                     Pl ("      Obj : constant GNATCOLL.JSON.JSON_Value :=");
+                     Pl ("              GNATCOLL.JSON.Read (Json);");
+                     Pl ("   begin");
+                     Pl ("      return Create");
+                     for I in T.Fields.First_Index .. T.Fields.Last_Index loop
+                        declare
+                           F       : constant Type_Field :=
+                                       T.Fields.Element (I);
+                           F_Name  : constant String     := To_String (F.Name);
+                           Is_Last : constant Boolean    := (I = Last);
+                           Prefix  : constant String     :=
+                                       (if I = T.Fields.First_Index
+                                        then "        (" else "         ");
+                           Suffix  : constant String     :=
+                                       (if Is_Last then ");" else ",");
+                        begin
+                           Pl (Prefix & F_Name
+                               & " => GNATCOLL.JSON.Get (Obj, """
+                               & To_Lower (F_Name) & """)" & Suffix);
+                        end;
+                     end loop;
+                     Pl ("   end From_Json;");
+                  end if;
+               end;
+            end if;
+         end loop;
+
+         Ada.Text_IO.New_Line (File);
+         Pl ("end " & Pkg_Name & ";");
+         Ada.Text_IO.Close (File);
+      end Emit_Body;
+
+   begin
+      Emit_Spec;
+      if Needs_Body then
+         Emit_Body;
+      end if;
+   end Write_Type_Package;
+
+   --  ---------------------------------------------------------------
 
    procedure Generate
      (Spec       : Mia.Model.Package_Spec;
       Output_Dir : String)
    is
+      use Mia.Model;
       Pkg       : constant String := To_String (Spec.Name);
-      File_Base : constant String :=
-                    Package_To_File (Pkg) & "-server";
+      File_Base : constant String := Package_To_File (Pkg) & "-server";
+      Pkg_Set   : String_Sets.Set;
    begin
       if not Ada.Directories.Exists (Output_Dir) then
          Ada.Directories.Create_Directory (Output_Dir);
       end if;
+
+      --  Collect unique Ada packages implied by declared record types
+      for T of Spec.Types loop
+         if T.Kind = Record_Type then
+            declare
+               Pkg_Name : constant String := Impl_Package (To_String (T.Name));
+            begin
+               if Pkg_Name /= "" then
+                  String_Sets.Include
+                    (Pkg_Set, To_Unbounded_String (Pkg_Name));
+               end if;
+            end;
+         end if;
+      end loop;
+
+      --  Generate one package per unique type package name
+      for Pkg_Name of Pkg_Set loop
+         Write_Type_Package (Spec, To_String (Pkg_Name), Output_Dir);
+      end loop;
+
+      --  Generate the server dispatcher package
       Write_Spec (Pkg, Output_Dir, File_Base);
       Write_Body (Spec, Pkg, Output_Dir, File_Base);
    end Generate;

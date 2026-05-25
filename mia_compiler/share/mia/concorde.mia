@@ -1,10 +1,12 @@
 package Concorde_Api with Session => Concorde.Sessions.Session_Interface is
 
-   type Concorde.Api.Factions.Faction_Record is
+   type Concorde.Api.Responses.Faction_Record is
      record
+        Identifier : String;
         Name       : String;
-     end record
-     with To_Json => Concorde.Api.Factions.To_Json;
+        Adjective  : String;
+        Plural     : String;
+     end record;
      
    function Login
      (Faction  : String)
