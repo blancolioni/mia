@@ -7,8 +7,6 @@ package body Mia.Sessions is
 
    use Ada.Strings.Unbounded;
 
-   type Session_Access is access all Session_Interface'Class;
-
    package Session_Maps is new Ada.Containers.Hashed_Maps
      (Key_Type        => Unbounded_String,
       Element_Type    => Session_Access,
@@ -107,7 +105,7 @@ package body Mia.Sessions is
 
    function Get
      (Session_Id : String)
-      return access Session_Interface'Class
+      return Session_Access
    is
    begin
       return Store.Fetch (Session_Id);

@@ -1,10 +1,11 @@
 package Mia.Sessions is
 
    type Session_Interface is interface;
+   type Session_Access is access all Session_Interface'Class;
 
    function Get
      (Session_Id : String)
-      return access Session_Interface'Class;
+      return Session_Access;
 
    function Create
      (Session : not null access Session_Interface'Class)
