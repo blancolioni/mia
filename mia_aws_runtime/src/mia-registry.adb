@@ -85,11 +85,8 @@ package body Mia.Registry is
                  & Q & "Success" & Q & ",");
          Append (J, Q & "content" & Q & ":{"
                  & Q & "application/json" & Q & ":{"
-                 & Q & "schema" & Q & ":{");
-         Append (J, Q & "type" & Q & ":" & Q & "object" & Q & ","
-                 & Q & "properties" & Q & ":{");
-         Append (J, Q & "result" & Q & ":"
-                 & To_String (R.Result_Schema) & "}}");
+                 & Q & "schema" & Q & ":"
+                 & To_String (R.Result_Schema));
          Append (J, "}}}}}}");
       end loop;
       Append (J, "}}");

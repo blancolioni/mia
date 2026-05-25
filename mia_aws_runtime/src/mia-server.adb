@@ -186,7 +186,19 @@ package body Mia.Server is
                    AWS.Status.Parameters (Request);
       Headers  : constant AWS.Headers.List :=
                    AWS.Status.Header (Request);
-      Session_Id : constant String := Headers.Get_Values ("X-Mia-Session");
+      Auth_Header : constant String := Headers.Get_Values ("Authorization");
+      Bearer_Prefix : constant String := "Bearer ";
+      Session_Id : constant String :=
+                     (if Auth_Header'Length > Bearer_Prefix'Length
+                        and then Auth_Header
+                                   (Auth_Header'First
+                                    .. Auth_Header'First
+                                       + Bearer_Prefix'Length - 1)
+                                 = Bearer_Prefix
+                      then Auth_Header
+                             (Auth_Header'First + Bearer_Prefix'Length
+                              .. Auth_Header'Last)
+                      else "");
    begin
 
       for Element of Route_List loop

@@ -585,7 +585,9 @@ package body Mia.Generator is
          Pl ("   is");
 
          if Has_Session then
-            Pl ("      pragma Unreferenced (URI);");
+            Pl ("      pragma Unreferenced (URI"
+                & (if Parameter_Vectors.Is_Empty (Fn.Parameters)
+                   then ", Parameters" else "") & ");");
             Ada.Text_IO.New_Line (File);
             Pl ("      Raw : constant access"
                 & " Mia.Sessions.Session_Interface'Class :=");
@@ -648,7 +650,9 @@ package body Mia.Generator is
             Pl ("      end;");
 
          else
-            Pl ("      pragma Unreferenced (Session_Id, URI);");
+            Pl ("      pragma Unreferenced (Session_Id, URI"
+                & (if Parameter_Vectors.Is_Empty (Fn.Parameters)
+                   then ", Parameters" else "") & ");");
             if not Has_To_Json then
                Pl ("      use GNATCOLL.JSON;");
             end if;
@@ -810,7 +814,9 @@ package body Mia.Generator is
          Pl ("   is");
 
          if Has_Session then
-            Pl ("      pragma Unreferenced (URI);");
+            Pl ("      pragma Unreferenced (URI"
+                & (if Parameter_Vectors.Is_Empty (Fn.Parameters)
+                   then ", Parameters" else "") & ");");
             Ada.Text_IO.New_Line (File);
             Pl ("      Raw : constant access"
                 & " Mia.Sessions.Session_Interface'Class :=");
@@ -842,7 +848,9 @@ package body Mia.Generator is
             Pl ("         end;");
             Pl ("      end;");
          else
-            Pl ("      pragma Unreferenced (Session_Id, URI);");
+            Pl ("      pragma Unreferenced (Session_Id, URI"
+                & (if Parameter_Vectors.Is_Empty (Fn.Parameters)
+                   then ", Parameters" else "") & ");");
             Ada.Text_IO.New_Line (File);
             Emit_Params ("      ");
             Emit_Cb_And_Tail ("      ");
@@ -942,19 +950,26 @@ package body Mia.Generator is
             Pl ("         Path_Params     => "
                 & Ada_Lit (Params_J) & ",");
             declare
+               Elem_Type_S : constant String :=
+                               Resolve_Type
+                                 (To_String (Fn.Return_Type), Spec.Types);
                Elem_Schema : constant String :=
-                               Schema_For_Type
-                                 (Resolve_Type
-                                    (To_String (Fn.Return_Type),
-                                     Spec.Types),
-                                  Spec.Types);
+                               Schema_For_Type (Elem_Type_S, Spec.Types);
+               Has_To_Json : constant Boolean :=
+                               Resolve_To_Json
+                                 (Elem_Type_S, Fn, Spec.Types) /= "";
                Ret_Schema  : constant String :=
                                Ada_Lit
                                  (if Fn.Is_Array then
                                     "{""type"":""array"",""items"":"
                                     & Elem_Schema & "}"
+                                  elsif Has_To_Json then
+                                    Elem_Schema
                                   else
-                                    Elem_Schema);
+                                    "{""type"":""object"","
+                                    & """properties"":{"
+                                    & """result"":"
+                                    & Elem_Schema & "}}");
             begin
                if Schema_Fn /= "" then
                   Pl ("         Result_Schema   => " & Ret_Schema & ",");
