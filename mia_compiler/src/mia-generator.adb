@@ -1115,6 +1115,36 @@ package body Mia.Generator is
          return To_Lower (Field_Type) = "string";
       end Is_String_Field;
 
+      function Is_Float_Field (Field_Type : String) return Boolean is
+         Lower : constant String := To_Lower (Field_Type);
+      begin
+         return Lower = "float" or else Lower = "long_float";
+      end Is_Float_Field;
+
+      function Is_Bool_Field (Field_Type : String) return Boolean is
+      begin
+         return To_Lower (Field_Type) = "boolean";
+      end Is_Bool_Field;
+
+      function Is_Int_Field (Field_Type : String) return Boolean is
+         Lower : constant String := To_Lower (Field_Type);
+      begin
+         return Lower = "integer"
+           or else Lower = "positive"
+           or else Lower = "natural";
+      end Is_Int_Field;
+
+      --  True when any field in the type needs Fmt_Float
+      function Type_Has_Float_Fields (T : Type_Spec) return Boolean is
+      begin
+         for F of T.Fields loop
+            if Is_Float_Field (To_String (F.Type_Name)) then
+               return True;
+            end if;
+         end loop;
+         return False;
+      end Type_Has_Float_Fields;
+
       --  Storage type used in the private record body
       function Storage_Type (Field_Type : String) return String is
       begin
@@ -1165,16 +1195,6 @@ package body Mia.Generator is
          end loop;
          return False;
       end Type_Needs_From_Json;
-
-      --  Capitalise the first character of a string
-      function Cap_First (S : String) return String is
-      begin
-         if S'Length = 0 then
-            return S;
-         end if;
-         return Ada.Characters.Handling.To_Upper (S (S'First))
-                & S (S'First + 1 .. S'Last);
-      end Cap_First;
 
       --  True when any type in this package has a String field
       function Has_String_Fields return Boolean is
@@ -1493,7 +1513,47 @@ package body Mia.Generator is
       begin
          Ada.Text_IO.Create (File, Ada.Text_IO.Out_File, Path);
 
-         Pl ("with GNATCOLL.JSON;");
+         declare
+            Need_GNATCOLL  : Boolean := False;
+            Need_Float_IO  : Boolean := False;
+            Need_Fixed     : Boolean := False;
+         begin
+            for T of Spec.Types loop
+               if Type_In_Pkg (T) then
+                  declare
+                     Full : constant String := To_String (T.Name);
+                  begin
+                     if Type_Needs_From_Json (Full) then
+                        Need_GNATCOLL := True;
+                     end if;
+                     if Type_Needs_To_Json (Full) then
+                        for F of T.Fields loop
+                           declare
+                              FT : constant String :=
+                                     To_String (F.Type_Name);
+                           begin
+                              if Is_Float_Field (FT) then
+                                 Need_Float_IO := True;
+                                 Need_Fixed    := True;
+                              elsif Is_Int_Field (FT) then
+                                 Need_Fixed := True;
+                              end if;
+                           end;
+                        end loop;
+                     end if;
+                  end;
+               end if;
+            end loop;
+            if Need_GNATCOLL then
+               Pl ("with GNATCOLL.JSON;");
+            end if;
+            if Need_Float_IO then
+               Pl ("with Ada.Text_IO;");
+            end if;
+            if Need_Fixed then
+               Pl ("with Ada.Strings.Fixed;");
+            end if;
+         end;
          Ada.Text_IO.New_Line (File);
          Pl ("package body " & Pkg_Name & " is");
 
@@ -1523,77 +1583,123 @@ package body Mia.Generator is
                             & " (Self : " & Type_Name
                             & ") return String is");
                      end if;
-                     Pl ("      Obj : constant GNATCOLL.JSON.JSON_Value :=");
-                     Pl ("              GNATCOLL.JSON.Create_Object;");
-                     Pl ("   begin");
-                     for F of T.Fields loop
-                        declare
-                           F_Name : constant String := To_String (F.Name);
-                           Value  : constant String :=
-                                      F_Name & " (Self)";
-                        begin
-                           Pl ("      GNATCOLL.JSON.Set_Field");
-                           Pl ("        (Obj, """ & To_Lower (F_Name)
-                               & """, " & Value & ");");
-                        end;
-                     end loop;
-                     if not T.Links.Is_Empty then
-                        Pl ("      declare");
-                        Pl ("         Links_Val : constant"
-                            & " GNATCOLL.JSON.JSON_Value :=");
-                        Pl ("                       "
-                            & "GNATCOLL.JSON.Create_Object;");
-                        for Lnk of T.Links loop
-                           declare
-                              Var : constant String :=
-                                      "Link_"
-                                      & Cap_First (To_String (Lnk.Name));
-                           begin
-                              Pl ("         " & Var
-                                  & " : constant"
-                                  & " GNATCOLL.JSON.JSON_Value :=");
-                              Pl ("                       "
-                                  & "GNATCOLL.JSON.Create_Object;");
-                           end;
-                        end loop;
+                     --  Helpers in the declarative part
+                     if Type_Has_Float_Fields (T) then
+                        Pl ("      function Fmt_Float"
+                            & " (V : Long_Float) return String is");
+                        Pl ("         package LF_IO is new"
+                            & " Ada.Text_IO.Float_IO (Long_Float);");
+                        Pl ("         S : String (1 .. 50)"
+                            & " := (others => ' ');");
                         Pl ("      begin");
-                        for Lnk of T.Links loop
+                        Pl ("         LF_IO.Put (To => S, Item => V,"
+                            & " Aft => 15, Exp => 0);");
+                        Pl ("         return Ada.Strings.Fixed.Trim"
+                            & " (S, Ada.Strings.Both);");
+                        Pl ("      end Fmt_Float;");
+                     end if;
+                     Pl ("      function Quote (S : String)"
+                         & " return String is");
+                     Pl ("         R : String (1 .. S'Length * 2 + 2);");
+                     Pl ("         P : Positive := 2;");
+                     Pl ("      begin");
+                     Pl ("         R (1) := '""';");
+                     Pl ("         for C of S loop");
+                     Pl ("            if C = '""' or else C = '\'"
+                         & " then");
+                     Pl ("               R (P) := '\'; P := P + 1;");
+                     Pl ("            end if;");
+                     Pl ("            R (P) := C; P := P + 1;");
+                     Pl ("         end loop;");
+                     Pl ("         R (P) := '""';");
+                     Pl ("         return R (1 .. P);");
+                     Pl ("      end Quote;");
+                     Pl ("   begin");
+                     --  Build return as string concatenation
+                     declare
+                        DQ          : constant String := (1 => '"');
+                        First_Field : Boolean := True;
+                     begin
+                        Pl ("      return");
+                        Pl ("        " & Ada_Lit ("{") & " &");
+                        for F of T.Fields loop
                            declare
-                              Lnk_Name : constant String :=
-                                           To_String (Lnk.Name);
-                              Var      : constant String :=
-                                           "Link_" & Cap_First (Lnk_Name);
-                              Path     : constant String :=
-                                           Find_Function_Path
-                                             (To_String
-                                                (Lnk.Function_Name));
-                              Href     : constant String :=
-                                           Build_Href_Expr
-                                             (Path, Lnk.Bindings);
+                              F_Name : constant String :=
+                                         To_String (F.Name);
+                              F_Type : constant String :=
+                                         To_String (F.Type_Name);
+                              Key    : constant String :=
+                                         (if First_Field
+                                          then DQ & To_Lower (F_Name)
+                                               & DQ & ":"
+                                          else "," & DQ
+                                               & To_Lower (F_Name)
+                                               & DQ & ":");
+                              Val    : constant String :=
+                                         (if Is_String_Field (F_Type)
+                                          then "Quote ("
+                                               & F_Name & " (Self))"
+                                          elsif Is_Float_Field (F_Type)
+                                          then "Fmt_Float (Long_Float ("
+                                               & F_Name & " (Self)))"
+                                          elsif Is_Bool_Field (F_Type)
+                                          then "(if " & F_Name
+                                               & " (Self) then "
+                                               & Ada_Lit ("true")
+                                               & " else "
+                                               & Ada_Lit ("false") & ")"
+                                          else
+                                             "Ada.Strings.Fixed.Trim ("
+                                             & F_Name & " (Self)'Image,"
+                                             & " Ada.Strings.Left)");
                            begin
-                              Pl ("         GNATCOLL.JSON.Set_Field");
-                              Pl ("           (" & Var
-                                  & ", ""href"", Prefix & "
-                                  & Href & ");");
-                              Pl ("         GNATCOLL.JSON.Set_Field");
-                              Pl ("           (Links_Val, """
-                                  & To_Lower (Lnk_Name)
-                                  & """, " & Var & ");");
+                              Pl ("        " & Ada_Lit (Key)
+                                  & " & " & Val & " &");
+                              First_Field := False;
                            end;
                         end loop;
-                        Pl ("         GNATCOLL.JSON.Set_Field");
-                        Pl ("           (Obj, ""_links"", Links_Val);");
-                        Pl ("      end;");
-                     end if;
-                     Pl ("      declare");
-                     Pl ("         S : constant String :=");
-                     Pl ("               GNATCOLL.JSON.Write (Obj);");
-                     Pl ("         V : constant GNATCOLL.JSON.JSON_Value"
-                         & " :=");
-                     Pl ("               GNATCOLL.JSON.Read (S);");
-                     Pl ("      begin");
-                     Pl ("         return GNATCOLL.JSON.Write (V);");
-                     Pl ("      end;");
+                        if not T.Links.Is_Empty then
+                           Pl ("        "
+                               & Ada_Lit
+                                   ("," & DQ & "_links" & DQ & ":{")
+                               & " &");
+                           declare
+                              First_Link : Boolean := True;
+                           begin
+                              for Lnk of T.Links loop
+                                 declare
+                                    Lnk_Name : constant String :=
+                                                 To_Lower
+                                                   (To_String (Lnk.Name));
+                                    Path : constant String :=
+                                             Find_Function_Path
+                                               (To_String
+                                                  (Lnk.Function_Name));
+                                    Href : constant String :=
+                                             Build_Href_Expr
+                                               (Path, Lnk.Bindings);
+                                    Lnk_Key : constant String :=
+                                                (if First_Link
+                                                 then DQ & Lnk_Name & DQ
+                                                      & ":{" & DQ
+                                                      & "href" & DQ & ":"
+                                                 else "," & DQ & Lnk_Name
+                                                      & DQ & ":{" & DQ
+                                                      & "href" & DQ & ":");
+                                 begin
+                                    Pl ("        " & Ada_Lit (Lnk_Key)
+                                        & " & Quote (Prefix & "
+                                        & Href & ") & "
+                                        & Ada_Lit ("}") & " &");
+                                    First_Link := False;
+                                 end;
+                              end loop;
+                           end;
+                           Pl ("        " & Ada_Lit ("}}") & ";");
+                        else
+                           Pl ("        " & Ada_Lit ("}") & ";");
+                        end if;
+                     end;
                      Pl ("   end To_Json;");
                   end if;
 
