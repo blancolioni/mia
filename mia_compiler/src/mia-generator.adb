@@ -1210,7 +1210,8 @@ package body Mia.Generator is
                            end if;
                            Append
                              (Result,
-                              "Self." & To_String (B.Field_Name));
+                              To_String (B.Field_Name)
+                              & " (Self)");
                            Found := True;
                            exit;
                         end if;
@@ -1454,7 +1455,8 @@ package body Mia.Generator is
                      for F of T.Fields loop
                         declare
                            F_Name : constant String := To_String (F.Name);
-                           Value  : constant String := "Self." & F_Name;
+                           Value  : constant String :=
+                                      F_Name & " (Self)";
                         begin
                            Pl ("      GNATCOLL.JSON.Set_Field");
                            Pl ("        (Obj, """ & To_Lower (F_Name)
