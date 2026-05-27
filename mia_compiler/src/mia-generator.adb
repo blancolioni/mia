@@ -482,12 +482,30 @@ package body Mia.Generator is
                            (Output_Dir, File_Base, "adb");
       Withs          : String_Sets.Set;
       Session_Type_S : constant String := To_String (Spec.Session_Type);
+      Needs_Prefix   : Boolean := False;
 
       function Fn_Needs_Auth (Fn : Mia.Model.Function_Spec) return Boolean is
       begin
          return Session_Type_S /= ""
            and then Fn.Auth /= Mia.Model.Anonymous;
       end Fn_Needs_Auth;
+
+      function Return_Type_Has_Links (Type_Name : String) return Boolean is
+      begin
+         for T of Spec.Types loop
+            declare
+               Full : constant String := To_String (T.Name);
+            begin
+               if (Full = Type_Name
+                   or else Short_Name (Full) = Type_Name)
+                 and then not T.Links.Is_Empty
+               then
+                  return True;
+               end if;
+            end;
+         end loop;
+         return False;
+      end Return_Type_Has_Links;
 
       procedure Collect_Withs is
          procedure Add (Dotted : String) is
@@ -554,6 +572,8 @@ package body Mia.Generator is
          To_Json_Fn   : constant String  :=
                           Resolve_To_Json (Ret_Type, Fn, Spec.Types);
          Has_To_Json  : constant Boolean := To_Json_Fn /= "";
+         Has_Links    : constant Boolean :=
+                          Return_Type_Has_Links (Ret_Type);
          Has_Session  : constant Boolean := Fn_Needs_Auth (Fn);
          Handler_Name : constant String  := "Handle_" & Fn_Name;
 
@@ -671,7 +691,13 @@ package body Mia.Generator is
             if Has_To_Json then
                Pl ("         declare");
                Pl ("            S : constant String :=");
-               Pl ("                     " & To_Json_Fn & " (Result);");
+               if Has_Links then
+                  Pl ("                     " & To_Json_Fn & " (Result,");
+                  Pl ("                       Ada.Strings.Unbounded"
+                      & ".To_String (Registered_Prefix));");
+               else
+                  Pl ("                     " & To_Json_Fn & " (Result);");
+               end if;
                Pl ("         begin");
                Pl ("            return AWS.Response.Build");
                Pl ("              (""application/json"", S);");
@@ -730,7 +756,13 @@ package body Mia.Generator is
             if Has_To_Json then
                Pl ("      declare");
                Pl ("         S : constant String :=");
-               Pl ("                  " & To_Json_Fn & " (Result);");
+               if Has_Links then
+                  Pl ("                  " & To_Json_Fn & " (Result,");
+                  Pl ("                    Ada.Strings.Unbounded"
+                      & ".To_String (Registered_Prefix));");
+               else
+                  Pl ("                  " & To_Json_Fn & " (Result);");
+               end if;
                Pl ("      begin");
                Pl ("         return AWS.Response.Build");
                Pl ("           (""application/json"", S);");
@@ -757,9 +789,11 @@ package body Mia.Generator is
                           Resolve_Type
                             (To_String (Fn.Return_Type), Spec.Types);
          Scanner_Name : constant String  := To_String (Fn.Scanner);
-         To_Json_Fn   : constant String  :=
-                          Resolve_To_Json (Elem_Type, Fn, Spec.Types);
-         Has_Session  : constant Boolean := Fn_Needs_Auth (Fn);
+         To_Json_Fn      : constant String  :=
+                             Resolve_To_Json (Elem_Type, Fn, Spec.Types);
+         Elem_Has_Links  : constant Boolean :=
+                             Return_Type_Has_Links (Elem_Type);
+         Has_Session     : constant Boolean := Fn_Needs_Auth (Fn);
          Handler_Name : constant String  := "Handle_" & Fn_Name;
          Path_Tmpl    : constant String  := To_String (Fn.Path);
 
@@ -832,8 +866,15 @@ package body Mia.Generator is
             if To_Json_Fn /= "" then
                Pl (Indent & "   GNATCOLL.JSON.Append");
                Pl (Indent & "     (Items,");
-               Pl (Indent & "      GNATCOLL.JSON.Read"
-                   & " (" & To_Json_Fn & " (Element)));");
+               if Elem_Has_Links then
+                  Pl (Indent & "      GNATCOLL.JSON.Read");
+                  Pl (Indent & "        (" & To_Json_Fn & " (Element,");
+                  Pl (Indent & "         Ada.Strings.Unbounded"
+                      & ".To_String (Registered_Prefix))));");
+               else
+                  Pl (Indent & "      GNATCOLL.JSON.Read"
+                      & " (" & To_Json_Fn & " (Element)));");
+               end if;
             else
                Pl (Indent & "   GNATCOLL.JSON.Append");
                Pl (Indent & "     (Items, GNATCOLL.JSON.Create (Element));");
@@ -929,6 +970,12 @@ package body Mia.Generator is
             if Fn_Needs_Auth (Fn) then
                Needs_Session := True;
             end if;
+            if Return_Type_Has_Links
+                 (Resolve_Type
+                    (To_String (Fn.Return_Type), Spec.Types))
+            then
+               Needs_Prefix := True;
+            end if;
          end loop;
          if Needs_Json then
             Pl ("with GNATCOLL.JSON;");
@@ -936,6 +983,9 @@ package body Mia.Generator is
          if Needs_Session then
             Pl ("with AWS.Messages;");
             Pl ("with Mia.Sessions;");
+         end if;
+         if Needs_Prefix then
+            Pl ("with Ada.Strings.Unbounded;");
          end if;
       end;
       for W of Withs loop
@@ -949,6 +999,11 @@ package body Mia.Generator is
       if Session_Type_S /= "" then
          Pl ("   type Session_Reference is");
          Pl ("     not null access all " & Session_Type_S & "'Class;");
+         Ada.Text_IO.New_Line (File);
+      end if;
+      if Needs_Prefix then
+         Pl ("   Registered_Prefix :"
+             & " Ada.Strings.Unbounded.Unbounded_String;");
          Ada.Text_IO.New_Line (File);
       end if;
 
@@ -966,6 +1021,11 @@ package body Mia.Generator is
       Separator ("Register");
       Pl ("   procedure Register (Prefix : String := """") is");
       Pl ("   begin");
+      if Needs_Prefix then
+         Pl ("      Registered_Prefix :=");
+         Pl ("        Ada.Strings.Unbounded"
+             & ".To_Unbounded_String (Prefix);");
+      end if;
       for Fn of Spec.Functions loop
          declare
             Fn_Name   : constant String  := To_String (Fn.Name);
@@ -1320,8 +1380,15 @@ package body Mia.Generator is
                      Ada.Text_IO.New_Line (File);
                   end if;
                   if Needs_To_J then
-                     Pl ("   function To_Json"
-                         & " (Self : " & Type_Name & ") return String;");
+                     if not T.Links.Is_Empty then
+                        Pl ("   function To_Json");
+                        Pl ("     (Self   : " & Type_Name & ";");
+                        Pl ("      Prefix : String := """") return String;");
+                     else
+                        Pl ("   function To_Json"
+                            & " (Self : " & Type_Name
+                            & ") return String;");
+                     end if;
                   end if;
                   if Needs_From_J then
                      Pl ("   function From_Json"
@@ -1447,8 +1514,15 @@ package body Mia.Generator is
                   --  To_Json
                   if Needs_To_J then
                      Ada.Text_IO.New_Line (File);
-                     Pl ("   function To_Json"
-                         & " (Self : " & Type_Name & ") return String is");
+                     if not T.Links.Is_Empty then
+                        Pl ("   function To_Json");
+                        Pl ("     (Self   : " & Type_Name & ";");
+                        Pl ("      Prefix : String := """") return String is");
+                     else
+                        Pl ("   function To_Json"
+                            & " (Self : " & Type_Name
+                            & ") return String is");
+                     end if;
                      Pl ("      Obj : constant GNATCOLL.JSON.JSON_Value :=");
                      Pl ("              GNATCOLL.JSON.Create_Object;");
                      Pl ("   begin");
@@ -1499,7 +1573,8 @@ package body Mia.Generator is
                            begin
                               Pl ("         GNATCOLL.JSON.Set_Field");
                               Pl ("           (" & Var
-                                  & ", ""href"", " & Href & ");");
+                                  & ", ""href"", Prefix & "
+                                  & Href & ");");
                               Pl ("         GNATCOLL.JSON.Set_Field");
                               Pl ("           (Links_Val, """
                                   & To_Lower (Lnk_Name)
