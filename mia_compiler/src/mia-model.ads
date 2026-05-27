@@ -21,11 +21,31 @@ package Mia.Model is
      (Index_Type   => Positive,
       Element_Type => Type_Field);
 
+   type Link_Binding is record
+      Param_Name : Ada.Strings.Unbounded.Unbounded_String;
+      Field_Name : Ada.Strings.Unbounded.Unbounded_String;
+   end record;
+
+   package Binding_Vectors is new Ada.Containers.Vectors
+     (Index_Type   => Positive,
+      Element_Type => Link_Binding);
+
+   type Link_Spec is record
+      Name          : Ada.Strings.Unbounded.Unbounded_String;
+      Function_Name : Ada.Strings.Unbounded.Unbounded_String;
+      Bindings      : Binding_Vectors.Vector;
+   end record;
+
+   package Link_Spec_Vectors is new Ada.Containers.Vectors
+     (Index_Type   => Positive,
+      Element_Type => Link_Spec);
+
    type Type_Kind is (Enum_Type, Record_Type);
 
    type Type_Spec (Kind : Type_Kind := Enum_Type) is record
       Name    : Ada.Strings.Unbounded.Unbounded_String;
       To_Json : Ada.Strings.Unbounded.Unbounded_String;
+      Links   : Link_Spec_Vectors.Vector;
       case Kind is
          when Enum_Type =>
             Literals : String_Vectors.Vector;

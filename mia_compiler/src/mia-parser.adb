@@ -278,6 +278,88 @@ package body Mia.Parser is
          end if;
       end Parse_Type_Decl;
 
+      function Short_Name_Of (Name : String) return String is
+      begin
+         for I in reverse Name'Range loop
+            if Name (I) = '.' then
+               return Name (I + 1 .. Name'Last);
+            end if;
+         end loop;
+         return Name;
+      end Short_Name_Of;
+
+      procedure Parse_Links (Result : in out Package_Spec) is
+         Type_Name : constant String := Parse_Name;
+         T_Idx     : Natural := 0;
+      begin
+         for I in Result.Types.First_Index
+                  .. Result.Types.Last_Index
+         loop
+            declare
+               Full : constant String :=
+                        To_String (Result.Types.Element (I).Name);
+            begin
+               if Full = Type_Name
+                 or else Short_Name_Of (Full) = Type_Name
+               then
+                  T_Idx := I;
+                  exit;
+               end if;
+            end;
+         end loop;
+         if T_Idx = 0 then
+            raise Parse_Error
+              with "links: unknown type '" & Type_Name & "'";
+         end if;
+         Expect (Tok_Is);
+         declare
+            T : Mia.Model.Type_Spec :=
+                  Result.Types.Element (T_Idx);
+         begin
+            while Peek (L).Kind /= Tok_End loop
+               declare
+                  Link : Mia.Model.Link_Spec;
+               begin
+                  Link.Name :=
+                    To_Unbounded_String (Expect_Identifier);
+                  Expect (Tok_Arrow);
+                  Link.Function_Name :=
+                    To_Unbounded_String (Expect_Identifier);
+                  Expect (Tok_Left_Paren);
+                  loop
+                     declare
+                        B : Mia.Model.Link_Binding;
+                     begin
+                        B.Param_Name :=
+                          To_Unbounded_String (Expect_Identifier);
+                        Expect (Tok_Arrow);
+                        B.Field_Name :=
+                          To_Unbounded_String (Expect_Identifier);
+                        Link.Bindings.Append (B);
+                     end;
+                     exit when Peek (L).Kind /= Tok_Comma;
+                     Consume (L);
+                  end loop;
+                  Expect (Tok_Right_Paren);
+                  Expect (Tok_Semicolon);
+                  T.Links.Append (Link);
+               end;
+            end loop;
+            Result.Types.Replace_Element (T_Idx, T);
+         end;
+         Expect (Tok_End);
+         declare
+            use Ada.Characters.Handling;
+            End_Word : constant String :=
+                         To_Lower (Expect_Identifier);
+         begin
+            if End_Word /= "links" then
+               raise Parse_Error
+                 with "expected 'links' after 'end'";
+            end if;
+         end;
+      end Parse_Links;
+
       procedure Parse_Package_Aspects (Spec : in out Package_Spec) is
       begin
          loop
@@ -317,13 +399,19 @@ package body Mia.Parser is
       Expect (Tok_Is);
       while Peek (L).Kind = Tok_Function
         or else Peek (L).Kind = Tok_Type
+        or else (Peek (L).Kind = Tok_Identifier
+                 and then Ada.Characters.Handling.To_Lower
+                            (To_String (Peek (L).Text)) = "links")
       loop
          if Peek (L).Kind = Tok_Function then
             Consume (L);
             Result.Functions.Append (Parse_Function);
-         else
+         elsif Peek (L).Kind = Tok_Type then
             Consume (L);
             Result.Types.Append (Parse_Type_Decl);
+         else
+            Consume (L);  --  consume 'links'
+            Parse_Links (Result);
          end if;
          Expect (Tok_Semicolon);
       end loop;

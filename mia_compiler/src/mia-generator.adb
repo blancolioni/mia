@@ -388,6 +388,31 @@ package body Mia.Generator is
             Append (J, Schema_For_Type (F_Type, Types));
          end;
       end loop;
+      if not T.Links.Is_Empty then
+         if not First then
+            Append (J, ",");
+         end if;
+         Append (J, """_links"":{"
+                 & """type"":""object"","
+                 & """properties"":{");
+         declare
+            First_Link : Boolean := True;
+         begin
+            for Lnk of T.Links loop
+               if not First_Link then
+                  Append (J, ",");
+               end if;
+               First_Link := False;
+               Append
+                 (J, """"
+                  & To_Lower (To_String (Lnk.Name))
+                  & """:{""type"":""object"","
+                  & """properties"":{""href"":"
+                  & "{""type"":""string""}}}");
+            end loop;
+         end;
+         Append (J, "}}");
+      end if;
       Append (J, "}}");
       return To_String (J);
    end Schema_For_Record;
@@ -1081,6 +1106,16 @@ package body Mia.Generator is
          return False;
       end Type_Needs_From_Json;
 
+      --  Capitalise the first character of a string
+      function Cap_First (S : String) return String is
+      begin
+         if S'Length = 0 then
+            return S;
+         end if;
+         return Ada.Characters.Handling.To_Upper (S (S'First))
+                & S (S'First + 1 .. S'Last);
+      end Cap_First;
+
       --  True when any type in this package has a String field
       function Has_String_Fields return Boolean is
       begin
@@ -1114,6 +1149,88 @@ package body Mia.Generator is
          end loop;
          return False;
       end Needs_Body;
+
+      --  Return the Path template of a function by name
+      function Find_Function_Path (Fn_Name : String) return String is
+      begin
+         for Fn of Spec.Functions loop
+            if To_String (Fn.Name) = Fn_Name then
+               return To_String (Fn.Path);
+            end if;
+         end loop;
+         raise Generator_Error
+           with "links: unknown function '" & Fn_Name & "'";
+      end Find_Function_Path;
+
+      --  Build an Ada string expression for the href of a link.
+      --  E.g. path "factions/{faction_name}", binding
+      --  Faction_Name => Identifier  =>  "/factions/" & Self.Identifier
+      function Build_Href_Expr
+        (Template : String;
+         Bindings : Binding_Vectors.Vector)
+         return String
+      is
+         Result  : Unbounded_String;
+         Literal : Unbounded_String := To_Unbounded_String ("/");
+         I       : Positive := Template'First;
+
+         procedure Flush_Literal is
+         begin
+            if Length (Literal) > 0 then
+               if Length (Result) > 0 then
+                  Append (Result, " & ");
+               end if;
+               Append (Result, """" & To_String (Literal) & """");
+               Literal := Null_Unbounded_String;
+            end if;
+         end Flush_Literal;
+
+      begin
+         while I <= Template'Last loop
+            if Template (I) = '{' then
+               declare
+                  J : Positive := I + 1;
+               begin
+                  while J <= Template'Last
+                    and then Template (J) /= '}'
+                  loop
+                     J := J + 1;
+                  end loop;
+                  declare
+                     Key   : constant String :=
+                               To_Lower (Template (I + 1 .. J - 1));
+                     Found : Boolean := False;
+                  begin
+                     Flush_Literal;
+                     for B of Bindings loop
+                        if To_Lower (To_String (B.Param_Name)) = Key
+                        then
+                           if Length (Result) > 0 then
+                              Append (Result, " & ");
+                           end if;
+                           Append
+                             (Result,
+                              "Self." & To_String (B.Field_Name));
+                           Found := True;
+                           exit;
+                        end if;
+                     end loop;
+                     if not Found then
+                        raise Generator_Error
+                          with "links: no binding for path"
+                               & " parameter '" & Key & "'";
+                     end if;
+                     I := J + 1;
+                  end;
+               end;
+            else
+               Append (Literal, Template (I));
+               I := I + 1;
+            end if;
+         end loop;
+         Flush_Literal;
+         return To_String (Result);
+      end Build_Href_Expr;
 
       --  Emit parameter declarations for Create, one line per field
       procedure Emit_Param_List
@@ -1340,10 +1457,57 @@ package body Mia.Generator is
                            Value  : constant String := "Self." & F_Name;
                         begin
                            Pl ("      GNATCOLL.JSON.Set_Field");
-                           Pl ("        (Obj, """ & To_Lower (F_Name) & """, "
-                               & Value & ");");
+                           Pl ("        (Obj, """ & To_Lower (F_Name)
+                               & """, " & Value & ");");
                         end;
                      end loop;
+                     if not T.Links.Is_Empty then
+                        Pl ("      declare");
+                        Pl ("         Links_Val : constant"
+                            & " GNATCOLL.JSON.JSON_Value :=");
+                        Pl ("                       "
+                            & "GNATCOLL.JSON.Create_Object;");
+                        for Lnk of T.Links loop
+                           declare
+                              Var : constant String :=
+                                      "Link_"
+                                      & Cap_First (To_String (Lnk.Name));
+                           begin
+                              Pl ("         " & Var
+                                  & " : constant"
+                                  & " GNATCOLL.JSON.JSON_Value :=");
+                              Pl ("                       "
+                                  & "GNATCOLL.JSON.Create_Object;");
+                           end;
+                        end loop;
+                        Pl ("      begin");
+                        for Lnk of T.Links loop
+                           declare
+                              Lnk_Name : constant String :=
+                                           To_String (Lnk.Name);
+                              Var      : constant String :=
+                                           "Link_" & Cap_First (Lnk_Name);
+                              Path     : constant String :=
+                                           Find_Function_Path
+                                             (To_String
+                                                (Lnk.Function_Name));
+                              Href     : constant String :=
+                                           Build_Href_Expr
+                                             (Path, Lnk.Bindings);
+                           begin
+                              Pl ("         GNATCOLL.JSON.Set_Field");
+                              Pl ("           (" & Var
+                                  & ", ""href"", " & Href & ");");
+                              Pl ("         GNATCOLL.JSON.Set_Field");
+                              Pl ("           (Links_Val, """
+                                  & To_Lower (Lnk_Name)
+                                  & """, " & Var & ");");
+                           end;
+                        end loop;
+                        Pl ("         GNATCOLL.JSON.Set_Field");
+                        Pl ("           (Obj, ""_links"", Links_Val);");
+                        Pl ("      end;");
+                     end if;
                      Pl ("      return GNATCOLL.JSON.Write (Obj);");
                      Pl ("   end To_Json;");
                   end if;
