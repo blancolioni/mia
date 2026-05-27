@@ -1585,7 +1585,9 @@ package body Mia.Generator is
                         Pl ("           (Obj, ""_links"", Links_Val);");
                         Pl ("      end;");
                      end if;
-                     Pl ("      return GNATCOLL.JSON.Write (Obj);");
+                     Pl ("      return GNATCOLL.JSON.Write");
+                     Pl ("        (GNATCOLL.JSON.Read");
+                     Pl ("           (GNATCOLL.JSON.Write (Obj)));");
                      Pl ("   end To_Json;");
                   end if;
 

@@ -9,6 +9,7 @@ with AWS.Messages;
 with AWS.Parameters;
 with AWS.Response.Set;
 with AWS.Server;
+with Mia.Api_Exceptions;
 with Mia.Registry;
 
 package body Mia.Server is
@@ -264,6 +265,17 @@ package body Mia.Server is
         (Content_Type => "text/html",
          Message_Body => "<p>not found: " & URI,
          Status_Code  => AWS.Messages.S404);
+   exception
+      when Mia.Api_Exceptions.Not_Found =>
+         return AWS.Response.Build
+           (Status_Code  => AWS.Messages.S404,
+            Content_Type => "application/json",
+            Message_Body => "{""error"":""not found""}");
+      when Mia.Api_Exceptions.Unauthorized =>
+         return AWS.Response.Build
+           (Status_Code  => AWS.Messages.S401,
+            Content_Type => "application/json",
+            Message_Body => "{""error"":""unauthorized""}");
    end Service;
 
    -----------
