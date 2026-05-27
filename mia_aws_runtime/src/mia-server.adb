@@ -251,11 +251,11 @@ package body Mia.Server is
 
                   AWS.Response.Set.Add_Header
                     (Response, "Access-Control-Allow-Methods",
-                     "POST, OPTIONS");
+                     "GET, POST, OPTIONS");
 
                   AWS.Response.Set.Add_Header
                     (Response, "Access-Control-Allow-Headers",
-                     "Content-Type");
+                     "Content-Type, Authorization");
                   return Response;
                end;
             end if;
