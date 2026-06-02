@@ -43,9 +43,13 @@ package Mia.Model is
    type Type_Kind is (Enum_Type, Record_Type);
 
    type Type_Spec (Kind : Type_Kind := Enum_Type) is record
-      Name    : Ada.Strings.Unbounded.Unbounded_String;
-      To_Json : Ada.Strings.Unbounded.Unbounded_String;
-      Links   : Link_Spec_Vectors.Vector;
+      Name        : Ada.Strings.Unbounded.Unbounded_String;
+      To_Json     : Ada.Strings.Unbounded.Unbounded_String;
+      Links       : Link_Spec_Vectors.Vector;
+      Parent      : Ada.Strings.Unbounded.Unbounded_String;
+      --  Qualified name of parent type; empty for root types
+      Variant_Tag : Ada.Strings.Unbounded.Unbounded_String;
+      --  Lowercased Kind aspect value; empty means abstract/intermediate
       case Kind is
          when Enum_Type =>
             Literals : String_Vectors.Vector;

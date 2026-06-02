@@ -35,7 +35,7 @@ package Concorde_Api with Session => Concorde.Sessions.Session_Interface is
             Scanner => Concorde.Api.Factions.Scan_All_Factions;
 
 links Faction_Record is
-   self => Get_Faction (Faction_Name => Identifier);
+   self => Get_Faction (Faction_Name => Slug);
 end links;
 
 end Concorde_Api;

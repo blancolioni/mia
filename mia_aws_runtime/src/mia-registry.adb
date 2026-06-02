@@ -21,6 +21,17 @@ package body Mia.Registry is
 
    Routes : Route_Vectors.Vector;
 
+   type Schema_Entry is record
+      Name   : Unbounded_String;
+      Schema : Unbounded_String;
+   end record;
+
+   package Schema_Vectors is new Ada.Containers.Vectors
+     (Index_Type   => Positive,
+      Element_Type => Schema_Entry);
+
+   Schemas : Schema_Vectors.Vector;
+
    -------------------
    -- Build_Swagger --
    -------------------
@@ -42,13 +53,35 @@ package body Mia.Registry is
       Append (J, Q & "info" & Q & ":{"
               & Q & "title" & Q & ":" & Q & "API" & Q & ","
               & Q & "version" & Q & ":" & Q & "1.0.0" & Q & "},");
-      if Has_Auth then
-         Append (J, Q & "components" & Q & ":{"
-                 & Q & "securitySchemes" & Q & ":{"
-                 & Q & "bearerAuth" & Q & ":{"
-                 & Q & "type" & Q & ":" & Q & "http" & Q & ","
-                 & Q & "scheme" & Q & ":" & Q & "bearer" & Q
-                 & "}}},");
+      if Has_Auth or else not Schemas.Is_Empty then
+         Append (J, Q & "components" & Q & ":{");
+         if Has_Auth then
+            Append (J, Q & "securitySchemes" & Q & ":{"
+                    & Q & "bearerAuth" & Q & ":{"
+                    & Q & "type" & Q & ":" & Q & "http" & Q & ","
+                    & Q & "scheme" & Q & ":" & Q & "bearer" & Q
+                    & "}}");
+            if not Schemas.Is_Empty then
+               Append (J, ",");
+            end if;
+         end if;
+         if not Schemas.Is_Empty then
+            declare
+               First_Schema : Boolean := True;
+            begin
+               Append (J, Q & "schemas" & Q & ":{");
+               for S of Schemas loop
+                  if not First_Schema then
+                     Append (J, ",");
+                  end if;
+                  First_Schema := False;
+                  Append (J, Q & To_String (S.Name) & Q & ":"
+                          & To_String (S.Schema));
+               end loop;
+               Append (J, "}");
+            end;
+         end if;
+         Append (J, "},");
       end if;
       Append (J, Q & "paths" & Q & ":{");
       for R of Routes loop
@@ -108,6 +141,22 @@ package body Mia.Registry is
       return AWS.Response.Build
         ("application/json", Build_Swagger);
    end Handle_Swagger;
+
+   ---------------------
+   -- Register_Schema --
+   ---------------------
+
+   procedure Register_Schema
+     (Name   : String;
+      Schema : String)
+   is
+   begin
+      Schema_Vectors.Append
+        (Schemas,
+         Schema_Entry'
+           (Name   => To_Unbounded_String (Name),
+            Schema => To_Unbounded_String (Schema)));
+   end Register_Schema;
 
    --------------------
    -- Register_Route --

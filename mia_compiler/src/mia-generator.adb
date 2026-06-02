@@ -365,6 +365,12 @@ package body Mia.Generator is
       return To_String (J);
    end Schema_For_Enum;
 
+   --  $ref to a named schema in components/schemas
+   function Schema_Ref (Name : String) return String is
+   begin
+      return "{""$ref"":""#/components/schemas/" & Name & """}";
+   end Schema_Ref;
+
    function Schema_For_Record
      (T     : Mia.Model.Type_Spec;
       Types : Mia.Model.Type_Vectors.Vector)
@@ -372,50 +378,126 @@ package body Mia.Generator is
    is
       J     : Unbounded_String;
       First : Boolean := True;
-   begin
-      Append (J, "{""type"":""object"",""properties"":{");
-      for F of T.Fields loop
-         declare
-            F_Name : constant String :=
-                       To_Lower (To_String (F.Name));
-            F_Type : constant String := To_String (F.Type_Name);
-         begin
+
+      --  Emit own fields + _links as a plain object properties block
+      procedure Append_Own_Properties is
+      begin
+         for F of T.Fields loop
+            declare
+               F_Name : constant String :=
+                          To_Lower (To_String (F.Name));
+               F_Type : constant String := To_String (F.Type_Name);
+            begin
+               if not First then
+                  Append (J, ",");
+               end if;
+               First := False;
+               Append (J, """" & F_Name & """:");
+               Append (J, Schema_For_Type (F_Type, Types));
+            end;
+         end loop;
+         if not T.Links.Is_Empty then
             if not First then
                Append (J, ",");
             end if;
-            First := False;
-            Append (J, """" & F_Name & """:");
-            Append (J, Schema_For_Type (F_Type, Types));
-         end;
-      end loop;
-      if not T.Links.Is_Empty then
-         if not First then
-            Append (J, ",");
+            Append (J, """_links"":{"
+                    & """type"":""object"","
+                    & """properties"":{");
+            declare
+               First_Link : Boolean := True;
+            begin
+               for Lnk of T.Links loop
+                  if not First_Link then
+                     Append (J, ",");
+                  end if;
+                  First_Link := False;
+                  Append
+                    (J, """"
+                     & To_Lower (To_String (Lnk.Name))
+                     & """:{""type"":""object"","
+                     & """properties"":{""href"":"
+                     & "{""type"":""string""}}}");
+               end loop;
+            end;
+            Append (J, "}}");
          end if;
-         Append (J, """_links"":{"
-                 & """type"":""object"","
-                 & """properties"":{");
+      end Append_Own_Properties;
+
+      Has_Par : constant Boolean := Length (T.Parent) > 0;
+      Vtag    : constant String  := To_Lower (To_String (T.Variant_Tag));
+
+   begin
+      if Has_Par then
+         --  Derived type: allOf[parent_ref, {kind_field + own_fields}]
          declare
-            First_Link : Boolean := True;
+            Par_Short : constant String :=
+                          Short_Name (To_String (T.Parent));
          begin
-            for Lnk of T.Links loop
-               if not First_Link then
-                  Append (J, ",");
-               end if;
-               First_Link := False;
-               Append
-                 (J, """"
-                  & To_Lower (To_String (Lnk.Name))
-                  & """:{""type"":""object"","
-                  & """properties"":{""href"":"
-                  & "{""type"":""string""}}}");
-            end loop;
+            Append (J, "{""allOf"":[");
+            Append (J, Schema_Ref (Par_Short) & ",");
+            Append (J, "{""type"":""object"",""properties"":{");
+            if Vtag /= "" then
+               --  Concrete leaf: add kind enum as first property
+               Append (J, """kind"":{""type"":""string"","
+                       & """enum"":[""" & Vtag & """]}");
+               First := False;
+            end if;
+            Append_Own_Properties;
+            Append (J, "}}]}");
          end;
+      else
+         --  Root type (plain or abstract root): flat object
+         Append (J, "{""type"":""object"",""properties"":{");
+         Append_Own_Properties;
          Append (J, "}}");
       end if;
-      Append (J, "}}");
       return To_String (J);
    end Schema_For_Record;
+
+   --  oneOf all concrete subtypes of Type_Name, with discriminator
+   function Schema_For_OneOf
+     (Type_Name : String;
+      Types     : Mia.Model.Type_Vectors.Vector)
+      return String
+   is
+      use type Mia.Model.Type_Kind;
+      J     : Unbounded_String;
+      First : Boolean := True;
+
+      procedure Collect (Name : String) is
+         Short : constant String := Short_Name (Name);
+      begin
+         for T of Types loop
+            if T.Kind = Mia.Model.Record_Type then
+               declare
+                  P : constant String := To_String (T.Parent);
+               begin
+                  if P = Name or else Short_Name (P) = Short
+                    or else P = Short or else Short_Name (P) = Name
+                  then
+                     if Length (T.Variant_Tag) > 0 then
+                        if not First then
+                           Append (J, ",");
+                        end if;
+                        First := False;
+                        Append
+                          (J, Schema_Ref
+                                (Short_Name (To_String (T.Name))));
+                     else
+                        Collect (To_String (T.Name));
+                     end if;
+                  end if;
+               end;
+            end if;
+         end loop;
+      end Collect;
+
+   begin
+      Append (J, "{""oneOf"":[");
+      Collect (Type_Name);
+      Append (J, "],""discriminator"":{""propertyName"":""kind""}}");
+      return To_String (J);
+   end Schema_For_OneOf;
 
    function Schema_For_Type
      (Type_Name : String;
@@ -548,6 +630,40 @@ package body Mia.Generator is
          Pl ("   " & Dashes);
          Ada.Text_IO.New_Line (File);
       end Separator;
+
+      --  All concrete subtypes of Type_Name in this spec
+      function Concrete_Subtypes
+        (Type_Name : String) return Mia.Model.Type_Vectors.Vector
+      is
+         Short : constant String := Short_Name (Type_Name);
+         Result : Type_Vectors.Vector;
+
+         procedure Collect (Name : String) is
+         begin
+            for T of Spec.Types loop
+               if T.Kind = Record_Type then
+                  declare
+                     P : constant String := To_String (T.Parent);
+                  begin
+                     if P = Name or else Short_Name (P) = Name
+                       or else P = Short or else Short_Name (P) = Short
+                     then
+                        if Length (T.Variant_Tag) > 0 then
+                           Result.Append (T);
+                        else
+                           --  Intermediate: recurse into its subtypes
+                           Collect (To_String (T.Name));
+                        end if;
+                     end if;
+                  end;
+               end if;
+            end loop;
+         end Collect;
+
+      begin
+         Collect (Type_Name);
+         return Result;
+      end Concrete_Subtypes;
 
       procedure Write_Array_Handler (Fn : Mia.Model.Function_Spec);
 
@@ -789,11 +905,17 @@ package body Mia.Generator is
                           Resolve_Type
                             (To_String (Fn.Return_Type), Spec.Types);
          Scanner_Name : constant String  := To_String (Fn.Scanner);
-         To_Json_Fn      : constant String  :=
-                             Resolve_To_Json (Elem_Type, Fn, Spec.Types);
-         Elem_Has_Links  : constant Boolean :=
-                             Return_Type_Has_Links (Elem_Type);
-         Has_Session     : constant Boolean := Fn_Needs_Auth (Fn);
+         To_Json_Fn        : constant String  :=
+                               Resolve_To_Json (Elem_Type, Fn, Spec.Types);
+         Elem_Has_Links    : constant Boolean :=
+                               Return_Type_Has_Links (Elem_Type);
+         Elem_Polymorphic  : constant Boolean :=
+                               not Concrete_Subtypes (Elem_Type).Is_Empty;
+         Cb_Elem_Type      : constant String :=
+                               (if Elem_Polymorphic
+                                then Elem_Type & "'Class"
+                                else Elem_Type);
+         Has_Session       : constant Boolean := Fn_Needs_Auth (Fn);
          Handler_Name : constant String  := "Handle_" & Fn_Name;
          Path_Tmpl    : constant String  := To_String (Fn.Path);
 
@@ -861,12 +983,13 @@ package body Mia.Generator is
          begin
             Pl (Indent & "Items : GNATCOLL.JSON.JSON_Array;");
             Ada.Text_IO.New_Line (File);
-            Pl (Indent & "procedure Cb (Element : " & Elem_Type & ") is");
+            Pl (Indent & "procedure Cb (Element : "
+                & Cb_Elem_Type & ") is");
             Pl (Indent & "begin");
             if To_Json_Fn /= "" then
                Pl (Indent & "   GNATCOLL.JSON.Append");
                Pl (Indent & "     (Items,");
-               if Elem_Has_Links then
+               if Elem_Has_Links or else Elem_Polymorphic then
                   Pl (Indent & "      GNATCOLL.JSON.Read");
                   Pl (Indent & "        (" & To_Json_Fn & " (Element,");
                   Pl (Indent & "         Ada.Strings.Unbounded"
@@ -970,12 +1093,17 @@ package body Mia.Generator is
             if Fn_Needs_Auth (Fn) then
                Needs_Session := True;
             end if;
-            if Return_Type_Has_Links
-                 (Resolve_Type
-                    (To_String (Fn.Return_Type), Spec.Types))
-            then
-               Needs_Prefix := True;
-            end if;
+            declare
+               Elem : constant String :=
+                        Resolve_Type
+                          (To_String (Fn.Return_Type), Spec.Types);
+            begin
+               if Return_Type_Has_Links (Elem)
+                 or else not Concrete_Subtypes (Elem).Is_Empty
+               then
+                  Needs_Prefix := True;
+               end if;
+            end;
          end loop;
          if Needs_Json then
             Pl ("with GNATCOLL.JSON;");
@@ -1026,6 +1154,21 @@ package body Mia.Generator is
          Pl ("        Ada.Strings.Unbounded"
              & ".To_Unbounded_String (Prefix);");
       end if;
+      --  Register named schemas for record types in the spec
+      for T of Spec.Types loop
+         if T.Kind = Mia.Model.Record_Type then
+            declare
+               T_Short  : constant String :=
+                            Short_Name (To_String (T.Name));
+               T_Schema : constant String :=
+                            Schema_For_Record (T, Spec.Types);
+            begin
+               Pl ("      Mia.Registry.Register_Schema");
+               Pl ("        (""" & T_Short & """,");
+               Pl ("         " & Ada_Lit (T_Schema) & ");");
+            end;
+         end if;
+      end loop;
       for Fn of Spec.Functions loop
          declare
             Fn_Name   : constant String  := To_String (Fn.Name);
@@ -1052,26 +1195,50 @@ package body Mia.Generator is
             Pl ("         Path_Params     => "
                 & Ada_Lit (Params_J) & ",");
             declare
-               Elem_Type_S : constant String :=
-                               Resolve_Type
-                                 (To_String (Fn.Return_Type), Spec.Types);
-               Elem_Schema : constant String :=
-                               Schema_For_Type (Elem_Type_S, Spec.Types);
-               Has_To_Json : constant Boolean :=
-                               Resolve_To_Json
-                                 (Elem_Type_S, Fn, Spec.Types) /= "";
-               Ret_Schema  : constant String :=
-                               Ada_Lit
-                                 (if Fn.Is_Array then
-                                    "{""type"":""array"",""items"":"
-                                    & Elem_Schema & "}"
-                                  elsif Has_To_Json then
-                                    Elem_Schema
-                                  else
-                                    "{""type"":""object"","
-                                    & """properties"":{"
-                                    & """result"":"
-                                    & Elem_Schema & "}}");
+               Elem_Type_S  : constant String :=
+                                Resolve_Type
+                                  (To_String (Fn.Return_Type), Spec.Types);
+               Is_Poly      : constant Boolean :=
+                                not (for all T of Spec.Types =>
+                                       T.Kind /= Mia.Model.Record_Type
+                                       or else Length (T.Parent) = 0
+                                       or else (To_String (T.Parent)
+                                                  /= Elem_Type_S
+                                                and then
+                                                Short_Name
+                                                  (To_String (T.Parent))
+                                                  /= Short_Name
+                                                       (Elem_Type_S)));
+               --  Use $ref for named schemas; inline for scalars
+               Is_Named     : constant Boolean :=
+                                Schema_For_Type (Elem_Type_S, Spec.Types)
+                                  /= "{""type"":"""
+                                     & Json_Schema_Type (Elem_Type_S)
+                                     & """}";
+               Elem_Schema  : constant String :=
+                                (if Is_Poly
+                                 then Schema_For_OneOf
+                                        (Elem_Type_S, Spec.Types)
+                                 elsif Is_Named
+                                 then Schema_Ref
+                                        (Short_Name (Elem_Type_S))
+                                 else Schema_For_Type
+                                        (Elem_Type_S, Spec.Types));
+               Has_To_Json  : constant Boolean :=
+                                Resolve_To_Json
+                                  (Elem_Type_S, Fn, Spec.Types) /= "";
+               Ret_Schema   : constant String :=
+                                Ada_Lit
+                                  (if Fn.Is_Array then
+                                     "{""type"":""array"",""items"":"
+                                     & Elem_Schema & "}"
+                                   elsif Has_To_Json or else Is_Poly then
+                                     Elem_Schema
+                                   else
+                                     "{""type"":""object"","
+                                     & """properties"":{"
+                                     & """result"":"
+                                     & Elem_Schema & "}}");
             begin
                if Schema_Fn /= "" then
                   Pl ("         Result_Schema   => " & Ret_Schema & ",");
@@ -1134,17 +1301,6 @@ package body Mia.Generator is
            or else Lower = "natural";
       end Is_Int_Field;
 
-      --  True when any field in the type needs Fmt_Float
-      function Type_Has_Float_Fields (T : Type_Spec) return Boolean is
-      begin
-         for F of T.Fields loop
-            if Is_Float_Field (To_String (F.Type_Name)) then
-               return True;
-            end if;
-         end loop;
-         return False;
-      end Type_Has_Float_Fields;
-
       --  Storage type used in the private record body
       function Storage_Type (Field_Type : String) return String is
       begin
@@ -1196,6 +1352,113 @@ package body Mia.Generator is
          return False;
       end Type_Needs_From_Json;
 
+      function Is_Concrete (T : Type_Spec) return Boolean is
+      begin
+         return T.Kind = Record_Type
+           and then Length (T.Variant_Tag) > 0;
+      end Is_Concrete;
+
+      --  Topological sort: parents before children
+      function Sorted_Types return Type_Vectors.Vector is
+         Result  : Type_Vectors.Vector;
+         Emitted : String_Sets.Set;
+         Changed : Boolean;
+      begin
+         --  Roots first: no parent, or parent in a different package
+         for T of Spec.Types loop
+            if Type_In_Pkg (T) then
+               declare
+                  P : constant String := To_String (T.Parent);
+               begin
+                  if P = "" or else Impl_Package (P) /= Pkg_Name then
+                     Result.Append (T);
+                     String_Sets.Include (Emitted, T.Name);
+                  end if;
+               end;
+            end if;
+         end loop;
+         --  Iteratively append types whose parent is already emitted
+         loop
+            Changed := False;
+            for T of Spec.Types loop
+               if Type_In_Pkg (T)
+                 and then not String_Sets.Contains (Emitted, T.Name)
+               then
+                  declare
+                     P : constant String := To_String (T.Parent);
+                  begin
+                     if P /= ""
+                       and then Impl_Package (P) = Pkg_Name
+                       and then String_Sets.Contains
+                                  (Emitted, T.Parent)
+                     then
+                        Result.Append (T);
+                        String_Sets.Include (Emitted, T.Name);
+                        Changed := True;
+                     end if;
+                  end;
+               end if;
+            end loop;
+            exit when not Changed;
+         end loop;
+         --  Any remaining type indicates a cycle or missing parent
+         for T of Spec.Types loop
+            if Type_In_Pkg (T)
+              and then not String_Sets.Contains (Emitted, T.Name)
+            then
+               raise Generator_Error
+                 with "type inheritance cycle or unknown parent: "
+                      & To_String (T.Name);
+            end if;
+         end loop;
+         return Result;
+      end Sorted_Types;
+
+      --  Collect all fields for T, ancestors first, own fields last
+      function All_Fields
+        (T : Type_Spec) return Type_Field_Vectors.Vector
+      is
+         Result : Type_Field_Vectors.Vector;
+
+         procedure Add (Current : Type_Spec) is
+            P : constant String := To_String (Current.Parent);
+         begin
+            if P /= "" then
+               for Ancestor of Spec.Types loop
+                  declare
+                     Full : constant String :=
+                              To_String (Ancestor.Name);
+                  begin
+                     if Full = P
+                       or else Short_Name (Full) = P
+                     then
+                        Add (Ancestor);
+                        exit;
+                     end if;
+                  end;
+               end loop;
+            end if;
+            for F of Current.Fields loop
+               Result.Append (F);
+            end loop;
+         end Add;
+
+      begin
+         Add (T);
+         return Result;
+      end All_Fields;
+
+      --  True when any field (own or inherited) needs Fmt_Float
+      function Type_Has_Float_Fields (T : Type_Spec) return Boolean is
+      begin
+         for F of All_Fields (T) loop
+            if Is_Float_Field (To_String (F.Type_Name)) then
+               return True;
+            end if;
+         end loop;
+         return False;
+      end Type_Has_Float_Fields;
+
       --  True when any type in this package has a String field
       function Has_String_Fields return Boolean is
       begin
@@ -1211,11 +1474,15 @@ package body Mia.Generator is
          return False;
       end Has_String_Fields;
 
-      --  True when any type in this package needs To_Json or From_Json
+      --  True when any type in this package needs a body
       function Needs_Body return Boolean is
       begin
          for T of Spec.Types loop
             if Type_In_Pkg (T) then
+               --  Concrete types always need a To_Json override
+               if Is_Concrete (T) then
+                  return True;
+               end if;
                declare
                   Full : constant String := To_String (T.Name);
                begin
@@ -1338,6 +1605,35 @@ package body Mia.Generator is
          end loop;
       end Emit_Param_List;
 
+      --  True when any type in this package names T as its parent
+      function Has_Subtypes (Full_Name : String) return Boolean is
+         Short : constant String := Short_Name (Full_Name);
+      begin
+         for T of Spec.Types loop
+            if Type_In_Pkg (T) then
+               declare
+                  P : constant String := To_String (T.Parent);
+               begin
+                  if P = Full_Name or else P = Short
+                    or else Short_Name (P) = Short
+                  then
+                     return True;
+                  end if;
+               end;
+            end if;
+         end loop;
+         return False;
+      end Has_Subtypes;
+
+      --  Type is in an inheritance hierarchy and has no Variant_Tag
+      function Is_Abstract_Type (T : Type_Spec) return Boolean is
+         Full : constant String := To_String (T.Name);
+      begin
+         return T.Kind = Record_Type
+           and then Length (T.Variant_Tag) = 0
+           and then (Length (T.Parent) > 0 or else Has_Subtypes (Full));
+      end Is_Abstract_Type;
+
       --  ---------------------------------------------------------------
       --  Spec file
       --  ---------------------------------------------------------------
@@ -1361,29 +1657,60 @@ package body Mia.Generator is
          end if;
          Pl ("package " & Pkg_Name & " is");
 
-         --  Visible part: one block per type
-         for T of Spec.Types loop
-            if Type_In_Pkg (T) then
+         declare
+            Sorted : constant Type_Vectors.Vector := Sorted_Types;
+         begin
+            --  ---- Visible part ----------------------------------------
+            for T of Sorted loop
                declare
-                  Type_Name    : constant String  :=
+                  Type_Name    : constant String :=
                                    Short_Name (To_String (T.Name));
-                  Full_Name    : constant String  := To_String (T.Name);
+                  Full_Name    : constant String := To_String (T.Name);
+                  Abstract_T   : constant Boolean := Is_Abstract_Type (T);
+                  Concrete_T   : constant Boolean := Is_Concrete (T);
+                  Has_Par      : constant Boolean :=
+                                   Length (T.Parent) > 0;
+                  Par_Short    : constant String :=
+                                   (if Has_Par
+                                    then Short_Name (To_String (T.Parent))
+                                    else "");
                   Needs_To_J   : constant Boolean :=
                                    Type_Needs_To_Json (Full_Name);
                   Needs_From_J : constant Boolean :=
                                    Type_Needs_From_Json (Full_Name);
                begin
                   Ada.Text_IO.New_Line (File);
-                  Pl ("   type " & Type_Name & " is tagged private;");
+
+                  --  Type declaration
+                  if Abstract_T and then Has_Par then
+                     Pl ("   type " & Type_Name
+                         & " is abstract new " & Par_Short
+                         & " with private;");
+                  elsif Abstract_T then
+                     Pl ("   type " & Type_Name
+                         & " is abstract tagged private;");
+                  elsif Concrete_T and then Has_Par then
+                     Pl ("   type " & Type_Name
+                         & " is new " & Par_Short & " with private;");
+                  else
+                     Pl ("   type " & Type_Name & " is tagged private;");
+                  end if;
                   Ada.Text_IO.New_Line (File);
 
-                  --  Create
-                  Pl ("   function Create");
-                  Emit_Param_List (File, T.Fields);
-                  Pl ("      return " & Type_Name & ";");
-                  Ada.Text_IO.New_Line (File);
+                  --  Create (not for abstract types)
+                  if not Abstract_T then
+                     declare
+                        All_Flds : constant Type_Field_Vectors.Vector :=
+                                     All_Fields (T);
+                     begin
+                        Pl ("   function Create");
+                        Emit_Param_List (File, All_Flds);
+                        Pl ("      return " & Type_Name & ";");
+                        Ada.Text_IO.New_Line (File);
+                     end;
+                  end if;
 
-                  --  Accessors
+                  --  Accessors for own fields only
                   for F of T.Fields loop
                      declare
                         F_Name : constant String := To_String (F.Name);
@@ -1395,101 +1722,233 @@ package body Mia.Generator is
                      end;
                   end loop;
 
-                  --  To_Json / From_Json declarations
-                  if Needs_To_J or else Needs_From_J then
-                     Ada.Text_IO.New_Line (File);
-                  end if;
-                  if Needs_To_J then
-                     if not T.Links.Is_Empty then
-                        Pl ("   function To_Json");
-                        Pl ("     (Self   : " & Type_Name & ";");
-                        Pl ("      Prefix : String := """") return String;");
+                  --  To_Json / From_Json
+                  Ada.Text_IO.New_Line (File);
+                  if Abstract_T then
+                     --  Abstract types always need a dispatching To_Json
+                     if Has_Par then
+                        Pl ("   overriding function To_Json");
                      else
-                        Pl ("   function To_Json"
-                            & " (Self : " & Type_Name
-                            & ") return String;");
+                        Pl ("   function To_Json");
+                     end if;
+                     Pl ("     (Self   : " & Type_Name & ";");
+                     Pl ("      Prefix : String := """") return String"
+                         & " is abstract;");
+                  elsif Concrete_T and then Has_Par then
+                     --  Concrete derived: always overrides
+                     Pl ("   overriding function To_Json");
+                     Pl ("     (Self   : " & Type_Name & ";");
+                     Pl ("      Prefix : String := """") return String;");
+                     if Needs_From_J then
+                        Pl ("   function From_Json"
+                            & " (Json : String) return "
+                            & Type_Name & ";");
+                     end if;
+                  else
+                     --  Plain root or concrete root without parent
+                     if Needs_To_J then
+                        if not T.Links.Is_Empty then
+                           Pl ("   function To_Json");
+                           Pl ("     (Self   : " & Type_Name & ";");
+                           Pl ("      Prefix : String := """")"
+                               & " return String;");
+                        else
+                           Pl ("   function To_Json"
+                               & " (Self : " & Type_Name
+                               & ") return String;");
+                        end if;
+                     end if;
+                     if Needs_From_J then
+                        Pl ("   function From_Json"
+                            & " (Json : String) return "
+                            & Type_Name & ";");
                      end if;
                   end if;
-                  if Needs_From_J then
-                     Pl ("   function From_Json"
-                         & " (Json : String) return " & Type_Name & ";");
-                  end if;
                end;
-            end if;
-         end loop;
+            end loop;
 
-         --  Private part: full type + expression function completions
-         Ada.Text_IO.New_Line (File);
-         Pl ("private");
+            --  ---- Private part ----------------------------------------
+            Ada.Text_IO.New_Line (File);
+            Pl ("private");
 
-         for T of Spec.Types loop
-            if Type_In_Pkg (T) then
+            for T of Sorted loop
                declare
-                  Type_Name : constant String :=
-                                Short_Name (To_String (T.Name));
-                  Last      : constant Natural :=
-                                (if T.Fields.Is_Empty then 0
-                                 else T.Fields.Last_Index);
+                  Type_Name  : constant String :=
+                                 Short_Name (To_String (T.Name));
+                  Abstract_T : constant Boolean := Is_Abstract_Type (T);
+                  Concrete_T : constant Boolean := Is_Concrete (T);
+                  Has_Par    : constant Boolean :=
+                                 Length (T.Parent) > 0;
+                  Par_Short  : constant String :=
+                                 (if Has_Par
+                                  then Short_Name (To_String (T.Parent))
+                                  else "");
+                  All_Flds   : constant Type_Field_Vectors.Vector :=
+                                 All_Fields (T);
+                  Own_Last   : constant Natural :=
+                                 (if T.Fields.Is_Empty then 0
+                                  else T.Fields.Last_Index);
+                  All_Last   : constant Natural :=
+                                 (if All_Flds.Is_Empty then 0
+                                  else All_Flds.Last_Index);
                begin
                   Ada.Text_IO.New_Line (File);
 
-                  --  Full record declaration
-                  Pl ("   type " & Type_Name & " is tagged record");
-                  for F of T.Fields loop
-                     Pl ("      " & To_String (F.Name) & " : "
-                         & Storage_Type (To_String (F.Type_Name)) & ";");
-                  end loop;
-                  Pl ("   end record;");
-                  Ada.Text_IO.New_Line (File);
+                  --  Full type declaration
+                  if Abstract_T and then Has_Par then
+                     if T.Fields.Is_Empty then
+                        Pl ("   type " & Type_Name
+                            & " is abstract new " & Par_Short
+                            & " with null record;");
+                     else
+                        Pl ("   type " & Type_Name
+                            & " is abstract new " & Par_Short
+                            & " with record");
+                        for F of T.Fields loop
+                           Pl ("      " & To_String (F.Name) & " : "
+                               & Storage_Type (To_String (F.Type_Name))
+                               & ";");
+                        end loop;
+                        Pl ("   end record;");
+                     end if;
+                  elsif Abstract_T then
+                     if T.Fields.Is_Empty then
+                        Pl ("   type " & Type_Name
+                            & " is abstract tagged null record;");
+                     else
+                        Pl ("   type " & Type_Name
+                            & " is abstract tagged record");
+                        for F of T.Fields loop
+                           Pl ("      " & To_String (F.Name) & " : "
+                               & Storage_Type (To_String (F.Type_Name))
+                               & ";");
+                        end loop;
+                        Pl ("   end record;");
+                     end if;
+                  elsif Concrete_T and then Has_Par then
+                     if T.Fields.Is_Empty then
+                        Pl ("   type " & Type_Name
+                            & " is new " & Par_Short
+                            & " with null record;");
+                     else
+                        Pl ("   type " & Type_Name
+                            & " is new " & Par_Short & " with record");
+                        for F of T.Fields loop
+                           Pl ("      " & To_String (F.Name) & " : "
+                               & Storage_Type (To_String (F.Type_Name))
+                               & ";");
+                        end loop;
+                        Pl ("   end record;");
+                     end if;
+                  else
+                     --  Plain or concrete root
+                     if T.Fields.Is_Empty then
+                        Pl ("   type " & Type_Name
+                            & " is tagged null record;");
+                     else
+                        Pl ("   type " & Type_Name
+                            & " is tagged record");
+                        for F of T.Fields loop
+                           Pl ("      " & To_String (F.Name) & " : "
+                               & Storage_Type (To_String (F.Type_Name))
+                               & ";");
+                        end loop;
+                        Pl ("   end record;");
+                     end if;
+                  end if;
 
-                  --  Create expression function
-                  Pl ("   function Create");
-                  Emit_Param_List (File, T.Fields);
-                  Pl ("      return " & Type_Name);
-                  Pl ("   is (" & Type_Name & "'");
-                  for I in T.Fields.First_Index .. T.Fields.Last_Index loop
-                     declare
-                        F       : constant Type_Field := T.Fields.Element (I);
-                        F_Name  : constant String     := To_String (F.Name);
-                        F_Type  : constant String     :=
-                                    To_String (F.Type_Name);
-                        Is_Last : constant Boolean    := (I = Last);
-                        Init    : constant String     :=
-                                    (if Is_String_Field (F_Type)
-                                     then "Ada.Strings.Unbounded"
-                                          & ".To_Unbounded_String ("
-                                          & F_Name & ")"
-                                     else F_Name);
-                        Prefix  : constant String     :=
-                                    (if I = T.Fields.First_Index
-                                     then "         (" else "          ");
-                        Suffix  : constant String     :=
-                                    (if Is_Last then "));" else ",");
-                     begin
-                        Pl (Prefix & F_Name & " => " & Init & Suffix);
-                     end;
-                  end loop;
-                  Ada.Text_IO.New_Line (File);
+                  if not Abstract_T then
+                     Ada.Text_IO.New_Line (File);
+                     --  Create expression function
+                     Pl ("   function Create");
+                     Emit_Param_List (File, All_Flds);
+                     Pl ("      return " & Type_Name);
+                     if Concrete_T and then Has_Par then
+                        --  Extension aggregate: parent as subtype mark
+                        --  Component associations listed WITHOUT inner ()
+                        Pl ("   is (" & Par_Short & " with");
+                        for I in All_Flds.First_Index
+                                 .. All_Flds.Last_Index
+                        loop
+                           declare
+                              F       : constant Type_Field :=
+                                          All_Flds.Element (I);
+                              F_Name  : constant String :=
+                                          To_String (F.Name);
+                              F_Type  : constant String :=
+                                          To_String (F.Type_Name);
+                              Is_Last : constant Boolean := (I = All_Last);
+                              Init    : constant String :=
+                                          (if Is_String_Field (F_Type)
+                                           then "Ada.Strings.Unbounded"
+                                                & ".To_Unbounded_String ("
+                                                & F_Name & ")"
+                                           else F_Name);
+                              Pfx     : constant String := "         ";
+                              Sfx     : constant String :=
+                                          (if Is_Last then ");" else ",");
+                           begin
+                              Pl (Pfx & F_Name & " => " & Init & Sfx);
+                           end;
+                        end loop;
+                     else
+                        --  Plain/concrete root: qualified aggregate
+                        Pl ("   is (" & Type_Name & "'");
+                        for I in All_Flds.First_Index
+                                 .. All_Flds.Last_Index
+                        loop
+                           declare
+                              F       : constant Type_Field :=
+                                          All_Flds.Element (I);
+                              F_Name  : constant String :=
+                                          To_String (F.Name);
+                              F_Type  : constant String :=
+                                          To_String (F.Type_Name);
+                              Is_Last : constant Boolean := (I = All_Last);
+                              Init    : constant String :=
+                                          (if Is_String_Field (F_Type)
+                                           then "Ada.Strings.Unbounded"
+                                                & ".To_Unbounded_String ("
+                                                & F_Name & ")"
+                                           else F_Name);
+                              Pfx     : constant String :=
+                                          (if I = All_Flds.First_Index
+                                           then "         ("
+                                           else "          ");
+                              Sfx     : constant String :=
+                                          (if Is_Last then "));" else ",");
+                           begin
+                              Pl (Pfx & F_Name & " => " & Init & Sfx);
+                           end;
+                        end loop;
+                     end if;
+                     Ada.Text_IO.New_Line (File);
+                  end if;
 
-                  --  Accessor expression functions
+                  --  Accessor expression functions for OWN fields only
                   for F of T.Fields loop
                      declare
                         F_Name : constant String := To_String (F.Name);
-                        F_Type : constant String := To_String (F.Type_Name);
+                        F_Type : constant String :=
+                                   To_String (F.Type_Name);
                         Expr   : constant String :=
                                    (if Is_String_Field (F_Type)
                                     then "Ada.Strings.Unbounded"
-                                         & ".To_String (Self." & F_Name & ")"
+                                         & ".To_String (Self."
+                                         & F_Name & ")"
                                     else "Self." & F_Name);
                      begin
                         Pl ("   function " & F_Name
-                            & " (Self : " & Type_Name & ") return " & F_Type);
+                            & " (Self : " & Type_Name
+                            & ") return " & F_Type);
                         Pl ("   is (" & Expr & ");");
                      end;
                   end loop;
+
+                  pragma Unreferenced (Own_Last);
                end;
-            end if;
-         end loop;
+            end loop;
+         end;
 
          Ada.Text_IO.New_Line (File);
          Pl ("end " & Pkg_Name & ";");
@@ -1514,20 +1973,25 @@ package body Mia.Generator is
          Ada.Text_IO.Create (File, Ada.Text_IO.Out_File, Path);
 
          declare
-            Need_GNATCOLL  : Boolean := False;
-            Need_Float_IO  : Boolean := False;
-            Need_Fixed     : Boolean := False;
+            Sorted        : constant Type_Vectors.Vector := Sorted_Types;
+            Need_GNATCOLL : Boolean := False;
+            Need_Float_IO : Boolean := False;
+            Need_Fixed    : Boolean := False;
          begin
-            for T of Spec.Types loop
-               if Type_In_Pkg (T) then
+            --  Determine required with clauses
+            for T of Sorted loop
+               if Is_Abstract_Type (T) then
+                  null;  --  abstract types have no body
+               else
                   declare
-                     Full : constant String := To_String (T.Name);
+                     Full     : constant String := To_String (T.Name);
+                     All_Flds : constant Type_Field_Vectors.Vector :=
+                                  All_Fields (T);
                   begin
-                     if Type_Needs_From_Json (Full) then
-                        Need_GNATCOLL := True;
-                     end if;
-                     if Type_Needs_To_Json (Full) then
-                        for F of T.Fields loop
+                     if Is_Concrete (T)
+                       or else Type_Needs_To_Json (Full)
+                     then
+                        for F of All_Flds loop
                            declare
                               FT : constant String :=
                                      To_String (F.Type_Name);
@@ -1541,6 +2005,9 @@ package body Mia.Generator is
                            end;
                         end loop;
                      end if;
+                     if Type_Needs_From_Json (Full) then
+                        Need_GNATCOLL := True;
+                     end if;
                   end;
                end if;
             end loop;
@@ -1553,187 +2020,223 @@ package body Mia.Generator is
             if Need_Fixed then
                Pl ("with Ada.Strings.Fixed;");
             end if;
-         end;
-         Ada.Text_IO.New_Line (File);
-         Pl ("package body " & Pkg_Name & " is");
 
-         for T of Spec.Types loop
-            if Type_In_Pkg (T) then
-               declare
-                  Type_Name    : constant String  :=
-                                   Short_Name (To_String (T.Name));
-                  Full_Name    : constant String  := To_String (T.Name);
-                  Needs_To_J   : constant Boolean :=
-                                   Type_Needs_To_Json (Full_Name);
-                  Needs_From_J : constant Boolean :=
-                                   Type_Needs_From_Json (Full_Name);
-                  Last         : constant Natural :=
-                                   (if T.Fields.Is_Empty then 0
-                                    else T.Fields.Last_Index);
-               begin
-                  --  To_Json
-                  if Needs_To_J then
-                     Ada.Text_IO.New_Line (File);
-                     if not T.Links.Is_Empty then
-                        Pl ("   function To_Json");
-                        Pl ("     (Self   : " & Type_Name & ";");
-                        Pl ("      Prefix : String := """") return String is");
-                     else
-                        Pl ("   function To_Json"
-                            & " (Self : " & Type_Name
-                            & ") return String is");
-                     end if;
-                     --  Helpers in the declarative part
-                     if Type_Has_Float_Fields (T) then
-                        Pl ("      function Fmt_Float"
-                            & " (V : Long_Float) return String is");
-                        Pl ("         package LF_IO is new"
-                            & " Ada.Text_IO.Float_IO (Long_Float);");
-                        Pl ("         S : String (1 .. 50)"
-                            & " := (others => ' ');");
+            Ada.Text_IO.New_Line (File);
+            Pl ("package body " & Pkg_Name & " is");
+
+            for T of Sorted loop
+               if Is_Abstract_Type (T) then
+                  null;  --  no body for abstract types
+               else
+                  declare
+                     Type_Name    : constant String :=
+                                      Short_Name (To_String (T.Name));
+                     Full_Name    : constant String := To_String (T.Name);
+                     Concrete_T   : constant Boolean := Is_Concrete (T);
+                     Has_Par      : constant Boolean :=
+                                      Length (T.Parent) > 0;
+                     Vtag         : constant String :=
+                                      To_String (T.Variant_Tag);
+                     All_Flds     : constant Type_Field_Vectors.Vector :=
+                                      All_Fields (T);
+                     All_Last     : constant Natural :=
+                                      (if All_Flds.Is_Empty then 0
+                                       else All_Flds.Last_Index);
+                     Needs_To_J   : constant Boolean :=
+                                      Concrete_T
+                                      or else Type_Needs_To_Json (Full_Name);
+                     Needs_From_J : constant Boolean :=
+                                      Type_Needs_From_Json (Full_Name);
+                  begin
+                     --  To_Json
+                     if Needs_To_J then
+                        Ada.Text_IO.New_Line (File);
+                        if Concrete_T and then Has_Par then
+                           Pl ("   overriding function To_Json");
+                           Pl ("     (Self   : " & Type_Name & ";");
+                           Pl ("      Prefix : String := """")"
+                               & " return String is");
+                        elsif not T.Links.Is_Empty then
+                           Pl ("   function To_Json");
+                           Pl ("     (Self   : " & Type_Name & ";");
+                           Pl ("      Prefix : String := """")"
+                               & " return String is");
+                        else
+                           Pl ("   function To_Json"
+                               & " (Self : " & Type_Name
+                               & ") return String is");
+                        end if;
+                        --  Helpers
+                        if Type_Has_Float_Fields (T) then
+                           Pl ("      function Fmt_Float"
+                               & " (V : Long_Float) return String is");
+                           Pl ("         package LF_IO is new"
+                               & " Ada.Text_IO.Float_IO (Long_Float);");
+                           Pl ("         S : String (1 .. 50)"
+                               & " := (others => ' ');");
+                           Pl ("      begin");
+                           Pl ("         LF_IO.Put (To => S, Item => V,"
+                               & " Aft => 15, Exp => 0);");
+                           Pl ("         return Ada.Strings.Fixed.Trim"
+                               & " (S, Ada.Strings.Both);");
+                           Pl ("      end Fmt_Float;");
+                        end if;
+                        Pl ("      function Quote (S : String)"
+                            & " return String is");
+                        Pl ("         R : String (1 .. S'Length * 2 + 2);");
+                        Pl ("         P : Positive := 2;");
                         Pl ("      begin");
-                        Pl ("         LF_IO.Put (To => S, Item => V,"
-                            & " Aft => 15, Exp => 0);");
-                        Pl ("         return Ada.Strings.Fixed.Trim"
-                            & " (S, Ada.Strings.Both);");
-                        Pl ("      end Fmt_Float;");
-                     end if;
-                     Pl ("      function Quote (S : String)"
-                         & " return String is");
-                     Pl ("         R : String (1 .. S'Length * 2 + 2);");
-                     Pl ("         P : Positive := 2;");
-                     Pl ("      begin");
-                     Pl ("         R (1) := '""';");
-                     Pl ("         for C of S loop");
-                     Pl ("            if C = '""' or else C = '\'"
-                         & " then");
-                     Pl ("               R (P) := '\'; P := P + 1;");
-                     Pl ("            end if;");
-                     Pl ("            R (P) := C; P := P + 1;");
-                     Pl ("         end loop;");
-                     Pl ("         R (P) := '""';");
-                     Pl ("         return R (1 .. P);");
-                     Pl ("      end Quote;");
-                     Pl ("   begin");
-                     --  Build return as string concatenation
-                     declare
-                        DQ          : constant String := (1 => '"');
-                        First_Field : Boolean := True;
-                     begin
-                        Pl ("      return");
-                        Pl ("        " & Ada_Lit ("{") & " &");
-                        for F of T.Fields loop
-                           declare
-                              F_Name : constant String :=
-                                         To_String (F.Name);
-                              F_Type : constant String :=
-                                         To_String (F.Type_Name);
-                              Key    : constant String :=
-                                         (if First_Field
-                                          then DQ & To_Lower (F_Name)
-                                               & DQ & ":"
-                                          else "," & DQ
-                                               & To_Lower (F_Name)
-                                               & DQ & ":");
-                              Val    : constant String :=
-                                         (if Is_String_Field (F_Type)
-                                          then "Quote ("
-                                               & F_Name & " (Self))"
-                                          elsif Is_Float_Field (F_Type)
-                                          then "Fmt_Float (Long_Float ("
-                                               & F_Name & " (Self)))"
-                                          elsif Is_Bool_Field (F_Type)
-                                          then "(if " & F_Name
-                                               & " (Self) then "
-                                               & Ada_Lit ("true")
-                                               & " else "
-                                               & Ada_Lit ("false") & ")"
-                                          else
-                                             "Ada.Strings.Fixed.Trim ("
-                                             & F_Name & " (Self)'Image,"
-                                             & " Ada.Strings.Left)");
-                           begin
-                              Pl ("        " & Ada_Lit (Key)
-                                  & " & " & Val & " &");
+                        Pl ("         R (1) := '""';");
+                        Pl ("         for C of S loop");
+                        Pl ("            if C = '""' or else C = '\'"
+                            & " then");
+                        Pl ("               R (P) := '\'; P := P + 1;");
+                        Pl ("            end if;");
+                        Pl ("            R (P) := C; P := P + 1;");
+                        Pl ("         end loop;");
+                        Pl ("         R (P) := '""';");
+                        Pl ("         return R (1 .. P);");
+                        Pl ("      end Quote;");
+                        Pl ("   begin");
+                        declare
+                           DQ          : constant String := (1 => '"');
+                           First_Field : Boolean := True;
+                        begin
+                           Pl ("      return");
+                           Pl ("        " & Ada_Lit ("{") & " &");
+                           --  kind field first for concrete derived types
+                           if Concrete_T and then Vtag /= "" then
+                              Pl ("        "
+                                  & Ada_Lit (DQ & "kind" & DQ & ":")
+                                  & " & "
+                                  & Ada_Lit (DQ & Vtag & DQ) & " &");
                               First_Field := False;
+                           end if;
+                           --  All fields (inherited + own)
+                           for F of All_Flds loop
+                              declare
+                                 F_Name : constant String :=
+                                            To_String (F.Name);
+                                 F_Type : constant String :=
+                                            To_String (F.Type_Name);
+                                 Key    : constant String :=
+                                            (if First_Field
+                                             then DQ & To_Lower (F_Name)
+                                                  & DQ & ":"
+                                             else "," & DQ
+                                                  & To_Lower (F_Name)
+                                                  & DQ & ":");
+                                 Val    : constant String :=
+                                            (if Is_String_Field (F_Type)
+                                             then "Quote ("
+                                                  & F_Name & " (Self))"
+                                             elsif Is_Float_Field (F_Type)
+                                             then "Fmt_Float (Long_Float ("
+                                                  & F_Name & " (Self)))"
+                                             elsif Is_Bool_Field (F_Type)
+                                             then "(if " & F_Name
+                                                  & " (Self) then "
+                                                  & Ada_Lit ("true")
+                                                  & " else "
+                                                  & Ada_Lit ("false") & ")"
+                                             else
+                                                "Ada.Strings.Fixed.Trim ("
+                                                & F_Name & " (Self)'Image,"
+                                                & " Ada.Strings.Left)");
+                              begin
+                                 Pl ("        " & Ada_Lit (Key)
+                                     & " & " & Val & " &");
+                                 First_Field := False;
+                              end;
+                           end loop;
+                           --  _links
+                           if not T.Links.Is_Empty then
+                              Pl ("        "
+                                  & Ada_Lit
+                                      ("," & DQ & "_links" & DQ & ":{")
+                                  & " &");
+                              declare
+                                 First_Link : Boolean := True;
+                              begin
+                                 for Lnk of T.Links loop
+                                    declare
+                                       Lnk_Name : constant String :=
+                                                    To_Lower (To_String
+                                                      (Lnk.Name));
+                                       Path  : constant String :=
+                                                 Find_Function_Path
+                                                   (To_String
+                                                      (Lnk.Function_Name));
+                                       Href  : constant String :=
+                                                 Build_Href_Expr
+                                                   (Path, Lnk.Bindings);
+                                       Lnk_Key : constant String :=
+                                                   (if First_Link
+                                                    then DQ & Lnk_Name
+                                                         & DQ & ":{" & DQ
+                                                         & "href" & DQ & ":"
+                                                    else "," & DQ & Lnk_Name
+                                                         & DQ & ":{" & DQ
+                                                         & "href" & DQ & ":");
+                                    begin
+                                       Pl ("        "
+                                           & Ada_Lit (Lnk_Key)
+                                           & " & Quote (Prefix & "
+                                           & Href & ") & "
+                                           & Ada_Lit ("}") & " &");
+                                       First_Link := False;
+                                    end;
+                                 end loop;
+                              end;
+                              Pl ("        " & Ada_Lit ("}}") & ";");
+                           else
+                              Pl ("        " & Ada_Lit ("}") & ";");
+                           end if;
+                        end;
+                        Pl ("   end To_Json;");
+                     end if;
+
+                     --  From_Json: use All_Fields for Create call
+                     if Needs_From_J then
+                        Ada.Text_IO.New_Line (File);
+                        Pl ("   function From_Json"
+                            & " (Json : String) return "
+                            & Type_Name & " is");
+                        Pl ("      Obj : constant"
+                            & " GNATCOLL.JSON.JSON_Value :=");
+                        Pl ("              GNATCOLL.JSON.Read (Json);");
+                        Pl ("   begin");
+                        Pl ("      return Create");
+                        for I in All_Flds.First_Index
+                                 .. All_Flds.Last_Index
+                        loop
+                           declare
+                              F       : constant Type_Field :=
+                                          All_Flds.Element (I);
+                              F_Name  : constant String :=
+                                          To_String (F.Name);
+                              Is_Last : constant Boolean :=
+                                          (I = All_Last);
+                              Pfx     : constant String :=
+                                          (if I = All_Flds.First_Index
+                                           then "        ("
+                                           else "         ");
+                              Sfx     : constant String :=
+                                          (if Is_Last then ");" else ",");
+                           begin
+                              Pl (Pfx & F_Name
+                                  & " => GNATCOLL.JSON.Get (Obj, """
+                                  & To_Lower (F_Name) & """)" & Sfx);
                            end;
                         end loop;
-                        if not T.Links.Is_Empty then
-                           Pl ("        "
-                               & Ada_Lit
-                                   ("," & DQ & "_links" & DQ & ":{")
-                               & " &");
-                           declare
-                              First_Link : Boolean := True;
-                           begin
-                              for Lnk of T.Links loop
-                                 declare
-                                    Lnk_Name : constant String :=
-                                                 To_Lower
-                                                   (To_String (Lnk.Name));
-                                    Path : constant String :=
-                                             Find_Function_Path
-                                               (To_String
-                                                  (Lnk.Function_Name));
-                                    Href : constant String :=
-                                             Build_Href_Expr
-                                               (Path, Lnk.Bindings);
-                                    Lnk_Key : constant String :=
-                                                (if First_Link
-                                                 then DQ & Lnk_Name & DQ
-                                                      & ":{" & DQ
-                                                      & "href" & DQ & ":"
-                                                 else "," & DQ & Lnk_Name
-                                                      & DQ & ":{" & DQ
-                                                      & "href" & DQ & ":");
-                                 begin
-                                    Pl ("        " & Ada_Lit (Lnk_Key)
-                                        & " & Quote (Prefix & "
-                                        & Href & ") & "
-                                        & Ada_Lit ("}") & " &");
-                                    First_Link := False;
-                                 end;
-                              end loop;
-                           end;
-                           Pl ("        " & Ada_Lit ("}}") & ";");
-                        else
-                           Pl ("        " & Ada_Lit ("}") & ";");
-                        end if;
-                     end;
-                     Pl ("   end To_Json;");
-                  end if;
+                        Pl ("   end From_Json;");
+                     end if;
 
-                  --  From_Json
-                  if Needs_From_J then
-                     Ada.Text_IO.New_Line (File);
-                     Pl ("   function From_Json"
-                         & " (Json : String) return " & Type_Name & " is");
-                     Pl ("      Obj : constant GNATCOLL.JSON.JSON_Value :=");
-                     Pl ("              GNATCOLL.JSON.Read (Json);");
-                     Pl ("   begin");
-                     Pl ("      return Create");
-                     for I in T.Fields.First_Index .. T.Fields.Last_Index loop
-                        declare
-                           F       : constant Type_Field :=
-                                       T.Fields.Element (I);
-                           F_Name  : constant String     := To_String (F.Name);
-                           Is_Last : constant Boolean    := (I = Last);
-                           Prefix  : constant String     :=
-                                       (if I = T.Fields.First_Index
-                                        then "        (" else "         ");
-                           Suffix  : constant String     :=
-                                       (if Is_Last then ");" else ",");
-                        begin
-                           Pl (Prefix & F_Name
-                               & " => GNATCOLL.JSON.Get (Obj, """
-                               & To_Lower (F_Name) & """)" & Suffix);
-                        end;
-                     end loop;
-                     Pl ("   end From_Json;");
-                  end if;
-               end;
-            end if;
-         end loop;
+                     pragma Unreferenced (All_Last);
+                  end;
+               end if;
+            end loop;
+         end;
 
          Ada.Text_IO.New_Line (File);
          Pl ("end " & Pkg_Name & ";");

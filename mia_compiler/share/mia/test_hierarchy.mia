@@ -1,0 +1,35 @@
+package Test_Api with Session => Test.Sessions.Session_Interface is
+
+   type Test.Api.Types.Named_Object is record
+      Slug : String;
+      Name : String;
+   end record;
+
+   type Test.Api.Types.Celestial_Object is new Named_Object with record
+      Mass   : Float;
+      Radius : Float;
+   end record;
+
+   type Test.Api.Types.Star is new Celestial_Object with record
+      Spectral_Class : String;
+      Luminosity     : Float;
+   end record with Kind => star;
+
+   type Test.Api.Types.World is new Celestial_Object with record
+      Orbit_Zone : String;
+      Climate    : String;
+   end record with Kind => world;
+
+   function Get_Satellites (Star_Slug : String)
+      return array of Test.Api.Types.Celestial_Object
+      with Method  => Get,
+           Path    => "stars/{star_slug}/satellites",
+           Scanner => Test.Api.Impl.Scan_Satellites;
+
+   function Get_Star (Star_Slug : String)
+      return Test.Api.Types.Star
+      with Method => Get,
+           Path   => "stars/{star_slug}",
+           Impl   => Test.Api.Impl.Get_Star;
+
+end Test_Api;

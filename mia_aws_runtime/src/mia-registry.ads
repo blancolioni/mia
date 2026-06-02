@@ -3,6 +3,10 @@ with Mia.Server;
 
 package Mia.Registry is
 
+   procedure Register_Schema
+     (Name   : String;
+      Schema : String);
+
    procedure Register_Route
      (Path            : String;
       Method          : String;

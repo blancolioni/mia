@@ -276,6 +276,11 @@ package body Mia.Server is
            (Status_Code  => AWS.Messages.S401,
             Content_Type => "application/json",
             Message_Body => "{""error"":""unauthorized""}");
+      when Mia.Api_Exceptions.Bad_Request =>
+         return AWS.Response.Build
+           (Status_Code  => AWS.Messages.S400,
+            Content_Type => "application/json",
+            Message_Body => "{""error"":""bad request""}");
    end Service;
 
    -----------
