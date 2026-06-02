@@ -2073,7 +2073,7 @@ package body Mia.Generator is
                            Pl ("         package LF_IO is new"
                                & " Ada.Text_IO.Float_IO (Long_Float);");
                            Pl ("         S : String (1 .. 50)"
-                               & " := (others => ' ');");
+                               & " := [others => ' '];");
                            Pl ("      begin");
                            Pl ("         LF_IO.Put (To => S, Item => V,"
                                & " Aft => 15, Exp => 0);");
