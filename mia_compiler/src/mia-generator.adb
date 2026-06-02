@@ -1863,65 +1863,36 @@ package body Mia.Generator is
                      Pl ("   function Create");
                      Emit_Param_List (File, All_Flds);
                      Pl ("      return " & Type_Name);
-                     if Concrete_T and then Has_Par then
-                        --  Extension aggregate: parent as subtype mark
-                        --  Component associations listed WITHOUT inner ()
-                        Pl ("   is (" & Par_Short & " with");
-                        for I in All_Flds.First_Index
-                                 .. All_Flds.Last_Index
-                        loop
-                           declare
-                              F       : constant Type_Field :=
-                                          All_Flds.Element (I);
-                              F_Name  : constant String :=
-                                          To_String (F.Name);
-                              F_Type  : constant String :=
-                                          To_String (F.Type_Name);
-                              Is_Last : constant Boolean := (I = All_Last);
-                              Init    : constant String :=
-                                          (if Is_String_Field (F_Type)
-                                           then "Ada.Strings.Unbounded"
-                                                & ".To_Unbounded_String ("
-                                                & F_Name & ")"
-                                           else F_Name);
-                              Pfx     : constant String := "         ";
-                              Sfx     : constant String :=
-                                          (if Is_Last then ");" else ",");
-                           begin
-                              Pl (Pfx & F_Name & " => " & Init & Sfx);
-                           end;
-                        end loop;
-                     else
-                        --  Plain/concrete root: qualified aggregate
-                        Pl ("   is (" & Type_Name & "'");
-                        for I in All_Flds.First_Index
-                                 .. All_Flds.Last_Index
-                        loop
-                           declare
-                              F       : constant Type_Field :=
-                                          All_Flds.Element (I);
-                              F_Name  : constant String :=
-                                          To_String (F.Name);
-                              F_Type  : constant String :=
-                                          To_String (F.Type_Name);
-                              Is_Last : constant Boolean := (I = All_Last);
-                              Init    : constant String :=
-                                          (if Is_String_Field (F_Type)
-                                           then "Ada.Strings.Unbounded"
-                                                & ".To_Unbounded_String ("
-                                                & F_Name & ")"
-                                           else F_Name);
-                              Pfx     : constant String :=
-                                          (if I = All_Flds.First_Index
-                                           then "         ("
-                                           else "          ");
-                              Sfx     : constant String :=
-                                          (if Is_Last then "));" else ",");
-                           begin
-                              Pl (Pfx & F_Name & " => " & Init & Sfx);
-                           end;
-                        end loop;
-                     end if;
+                     --  Qualified record aggregate: valid in private section
+                     --  where all inherited components are visible.
+                     Pl ("   is (" & Type_Name & "'");
+                     for I in All_Flds.First_Index
+                              .. All_Flds.Last_Index
+                     loop
+                        declare
+                           F       : constant Type_Field :=
+                                       All_Flds.Element (I);
+                           F_Name  : constant String :=
+                                       To_String (F.Name);
+                           F_Type  : constant String :=
+                                       To_String (F.Type_Name);
+                           Is_Last : constant Boolean := (I = All_Last);
+                           Init    : constant String :=
+                                       (if Is_String_Field (F_Type)
+                                        then "Ada.Strings.Unbounded"
+                                             & ".To_Unbounded_String ("
+                                             & F_Name & ")"
+                                        else F_Name);
+                           Pfx     : constant String :=
+                                       (if I = All_Flds.First_Index
+                                        then "         ("
+                                        else "          ");
+                           Sfx     : constant String :=
+                                       (if Is_Last then "));" else ",");
+                        begin
+                           Pl (Pfx & F_Name & " => " & Init & Sfx);
+                        end;
+                     end loop;
                      Ada.Text_IO.New_Line (File);
                   end if;
 
