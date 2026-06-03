@@ -589,6 +589,45 @@ package body Mia.Generator is
          return False;
       end Return_Type_Has_Links;
 
+      function Return_Type_Is_Abstract (Type_Name : String) return Boolean is
+         use type Mia.Model.Type_Kind;
+
+         function Has_Subtypes (Name : String) return Boolean is
+            Short : constant String := Short_Name (Name);
+         begin
+            for T of Spec.Types loop
+               if T.Kind = Mia.Model.Record_Type then
+                  declare
+                     P : constant String := To_String (T.Parent);
+                  begin
+                     if P = Name or else P = Short
+                       or else Short_Name (P) = Short
+                     then
+                        return True;
+                     end if;
+                  end;
+               end if;
+            end loop;
+            return False;
+         end Has_Subtypes;
+
+      begin
+         for T of Spec.Types loop
+            if T.Kind = Mia.Model.Record_Type then
+               declare
+                  Full : constant String := To_String (T.Name);
+               begin
+                  if Full = Type_Name or else Short_Name (Full) = Type_Name then
+                     return Length (T.Variant_Tag) = 0
+                       and then (Length (T.Parent) > 0
+                                 or else Has_Subtypes (Full));
+                  end if;
+               end;
+            end if;
+         end loop;
+         return False;
+      end Return_Type_Is_Abstract;
+
       procedure Collect_Withs is
          procedure Add (Dotted : String) is
             Pkg : constant String := Impl_Package (Dotted);
@@ -785,7 +824,11 @@ package body Mia.Generator is
             Pl ("         Session : constant Session_Reference :=");
             Pl ("                     Session_Reference (Raw);");
             Emit_Params ("         ");
-            Pl ("         Result : constant " & Ret_Type & " :=");
+            Pl ("         Result : constant "
+                & (if Return_Type_Is_Abstract (Ret_Type)
+                   then Ret_Type & "'Class"
+                   else Ret_Type)
+                & " :=");
             declare
                Call : Unbounded_String :=
                         To_Unbounded_String
@@ -839,7 +882,11 @@ package body Mia.Generator is
             end if;
             Ada.Text_IO.New_Line (File);
             Emit_Params ("      ");
-            Pl ("      Result : constant " & Ret_Type & " :=");
+            Pl ("      Result : constant "
+                & (if Return_Type_Is_Abstract (Ret_Type)
+                   then Ret_Type & "'Class"
+                   else Ret_Type)
+                & " :=");
             declare
                Call : Unbounded_String :=
                         To_Unbounded_String
