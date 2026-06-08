@@ -1506,6 +1506,17 @@ package body Mia.Generator is
          return False;
       end Type_Has_Float_Fields;
 
+      --  True when any field (own or inherited) needs Quote
+      function Type_Has_String_Fields (T : Type_Spec) return Boolean is
+      begin
+         for F of All_Fields (T) loop
+            if Is_String_Field (To_String (F.Type_Name)) then
+               return True;
+            end if;
+         end loop;
+         return False;
+      end Type_Has_String_Fields;
+
       --  True when any type in this package has a String field
       function Has_String_Fields return Boolean is
       begin
@@ -2099,22 +2110,27 @@ package body Mia.Generator is
                                & " (S, Ada.Strings.Both);");
                            Pl ("      end Fmt_Float;");
                         end if;
-                        Pl ("      function Quote (S : String)"
-                            & " return String is");
-                        Pl ("         R : String (1 .. S'Length * 2 + 2);");
-                        Pl ("         P : Positive := 2;");
-                        Pl ("      begin");
-                        Pl ("         R (1) := '""';");
-                        Pl ("         for C of S loop");
-                        Pl ("            if C = '""' or else C = '\'"
-                            & " then");
-                        Pl ("               R (P) := '\'; P := P + 1;");
-                        Pl ("            end if;");
-                        Pl ("            R (P) := C; P := P + 1;");
-                        Pl ("         end loop;");
-                        Pl ("         R (P) := '""';");
-                        Pl ("         return R (1 .. P);");
-                        Pl ("      end Quote;");
+                        if Type_Has_String_Fields (T)
+                          or else not T.Links.Is_Empty
+                        then
+                           Pl ("      function Quote (S : String)"
+                               & " return String is");
+                           Pl ("         R : String"
+                               & " (1 .. S'Length * 2 + 2);");
+                           Pl ("         P : Positive := 2;");
+                           Pl ("      begin");
+                           Pl ("         R (1) := '""';");
+                           Pl ("         for C of S loop");
+                           Pl ("            if C = '""' or else C = '\'"
+                               & " then");
+                           Pl ("               R (P) := '\'; P := P + 1;");
+                           Pl ("            end if;");
+                           Pl ("            R (P) := C; P := P + 1;");
+                           Pl ("         end loop;");
+                           Pl ("         R (P) := '""';");
+                           Pl ("         return R (1 .. P);");
+                           Pl ("      end Quote;");
+                        end if;
                         Pl ("   begin");
                         declare
                            DQ          : constant String := (1 => '"');
