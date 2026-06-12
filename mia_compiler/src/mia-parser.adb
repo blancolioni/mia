@@ -277,21 +277,19 @@ package body Mia.Parser is
       begin
          Expect (Tok_Is);
 
-         --  Enum: type T is (A, B, C)
+         --  Enum: type A.B.T is (..)
+         --  A.B is the existing Ada package where the enumeration is
+         --  declared; its literals are unknown at code-gen time and are
+         --  discovered at runtime via the type's attributes.
          if Peek (L).Kind = Tok_Left_Paren then
             declare
                T : Mia.Model.Type_Spec (Kind => Mia.Model.Enum_Type);
             begin
                T.Name := To_Unbounded_String (Name);
-               Consume (L);
-               T.Literals.Append
-                 (To_Unbounded_String (Expect_Identifier));
-               while Peek (L).Kind = Tok_Comma loop
-                  Consume (L);
-                  T.Literals.Append
-                    (To_Unbounded_String (Expect_Identifier));
-               end loop;
-               Expect (Tok_Right_Paren);
+               Consume (L);              --  (
+               Expect (Tok_Dot);         --  .
+               Expect (Tok_Dot);         --  .
+               Expect (Tok_Right_Paren); --  )
                return T;
             end;
 

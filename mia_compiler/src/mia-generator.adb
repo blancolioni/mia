@@ -54,9 +54,6 @@ package body Mia.Generator is
       Types     : Mia.Model.Type_Vectors.Vector)
       return String;
 
-   function Schema_For_Enum
-     (T : Mia.Model.Type_Spec) return String;
-
    function Schema_For_Record
      (T     : Mia.Model.Type_Spec;
       Types : Mia.Model.Type_Vectors.Vector)
@@ -335,7 +332,10 @@ package body Mia.Generator is
         or else Lower = "string"
       then
          return "Set_Field (Obj, ""result"", Result)";
-      elsif Lower = "float" or else Lower = "long_float" then
+      elsif Lower = "long_float" then
+         return "Set_Field_Long_Float"
+              & " (Obj, ""result"", Long_Float (Result))";
+      elsif Lower = "float" then
          return "Set_Field (Obj, ""result"", Float (Result))";
       else
          --  Enumeration or other scalar: use 'Image as a string value.
@@ -346,24 +346,6 @@ package body Mia.Generator is
    --  ---------------------------------------------------------------
    --  Schema generation from declared types
    --  ---------------------------------------------------------------
-
-   function Schema_For_Enum
-     (T : Mia.Model.Type_Spec) return String
-   is
-      J     : Unbounded_String;
-      First : Boolean := True;
-   begin
-      Append (J, "{""type"":""string"",""enum"":[");
-      for Lit of T.Literals loop
-         if not First then
-            Append (J, ",");
-         end if;
-         First := False;
-         Append (J, """" & To_String (Lit) & """");
-      end loop;
-      Append (J, "]}");
-      return To_String (J);
-   end Schema_For_Enum;
 
    --  $ref to a named schema in components/schemas
    function Schema_Ref (Name : String) return String is
@@ -512,7 +494,10 @@ package body Mia.Generator is
          begin
             if Full = Type_Name or else Short_Name (Full) = Type_Name then
                case T.Kind is
-                  when Enum_Type   => return Schema_For_Enum (T);
+                  --  Enum literals are unknown at code-gen time; the
+                  --  schema is built and registered at runtime, so only
+                  --  reference it here.
+                  when Enum_Type   => return Schema_Ref (Short_Name (Full));
                   when Record_Type => return Schema_For_Record (T, Types);
                end case;
             end if;
@@ -640,6 +625,11 @@ package body Mia.Generator is
          Add (Session_Type_S);
          for T of Spec.Types loop
             Add (To_String (T.To_Json));
+            --  External enum types live in their declaring Ada package,
+            --  needed for the runtime schema-building loop in Register.
+            if T.Kind = Mia.Model.Enum_Type then
+               Add (To_String (T.Name));
+            end if;
          end loop;
          for F of Spec.Functions loop
             Add (To_String (F.Impl));
@@ -1127,6 +1117,9 @@ package body Mia.Generator is
       declare
          Needs_Json    : Boolean := False;
          Needs_Session : Boolean := False;
+         Has_Enums     : constant Boolean :=
+                           (for some T of Spec.Types =>
+                              T.Kind = Mia.Model.Enum_Type);
       begin
          for Fn of Spec.Functions loop
             if Fn.Is_Array
@@ -1159,8 +1152,12 @@ package body Mia.Generator is
             Pl ("with AWS.Messages;");
             Pl ("with Mia.Sessions;");
          end if;
-         if Needs_Prefix then
+         if Needs_Prefix or else Has_Enums then
             Pl ("with Ada.Strings.Unbounded;");
+         end if;
+         --  Runtime enum schema building lowercases T'Image.
+         if Has_Enums then
+            Pl ("with Ada.Characters.Handling;");
          end if;
       end;
       for W of Withs loop
@@ -1213,6 +1210,45 @@ package body Mia.Generator is
                Pl ("      Mia.Registry.Register_Schema");
                Pl ("        (""" & T_Short & """,");
                Pl ("         " & Ada_Lit (T_Schema) & ");");
+            end;
+         end if;
+      end loop;
+      --  Register string-enum schemas for external enum types, building the
+      --  literal list at runtime from the type's attributes.
+      for T of Spec.Types loop
+         if T.Kind = Mia.Model.Enum_Type then
+            declare
+               Q : constant String := To_String (T.Name);
+               S : constant String := Short_Name (Q);
+            begin
+               Pl ("      declare");
+               Pl ("         Buf   : Ada.Strings.Unbounded"
+                   & ".Unbounded_String;");
+               Pl ("         Item  : " & Q & " := " & Q & "'First;");
+               Pl ("         First : Boolean := True;");
+               Pl ("      begin");
+               Pl ("         Ada.Strings.Unbounded.Append");
+               Pl ("           (Buf, ""{""""type"""":""""string"""","
+                   & """""enum"""":["");");
+               Pl ("         loop");
+               Pl ("            if not First then");
+               Pl ("               Ada.Strings.Unbounded.Append"
+                   & " (Buf, "","");");
+               Pl ("            end if;");
+               Pl ("            First := False;");
+               Pl ("            Ada.Strings.Unbounded.Append");
+               Pl ("              (Buf, '""' & Ada.Characters.Handling"
+                   & ".To_Lower");
+               Pl ("                       (" & Q
+                   & "'Image (Item)) & '""');");
+               Pl ("            exit when Item = " & Q & "'Last;");
+               Pl ("            Item := " & Q & "'Succ (Item);");
+               Pl ("         end loop;");
+               Pl ("         Ada.Strings.Unbounded.Append (Buf, ""]}"");");
+               Pl ("         Mia.Registry.Register_Schema");
+               Pl ("           (""" & S
+                   & """, Ada.Strings.Unbounded.To_String (Buf));");
+               Pl ("      end;");
             end;
          end if;
       end loop;
@@ -1348,13 +1384,43 @@ package body Mia.Generator is
            or else Lower = "natural";
       end Is_Int_Field;
 
+      --  True when the field type names a declared (external) enum type
+      function Is_Enum_Field (Field_Type : String) return Boolean is
+      begin
+         for T of Spec.Types loop
+            if T.Kind = Enum_Type then
+               declare
+                  Full : constant String := To_String (T.Name);
+               begin
+                  if Full = Field_Type
+                    or else Short_Name (Full) = Field_Type
+                  then
+                     return True;
+                  end if;
+               end;
+            end if;
+         end loop;
+         return False;
+      end Is_Enum_Field;
+
+      --  Ada type used in signatures (accessors, Create params); enum
+      --  fields resolve to their fully-qualified declaring name.
+      function Field_Ada_Type (Field_Type : String) return String is
+      begin
+         if Is_Enum_Field (Field_Type) then
+            return Resolve_Type (Field_Type, Spec.Types);
+         else
+            return Field_Type;
+         end if;
+      end Field_Ada_Type;
+
       --  Storage type used in the private record body
       function Storage_Type (Field_Type : String) return String is
       begin
          if Is_String_Field (Field_Type) then
             return "Ada.Strings.Unbounded.Unbounded_String";
          else
-            return Field_Type;
+            return Field_Ada_Type (Field_Type);
          end if;
       end Storage_Type;
 
@@ -1517,6 +1583,48 @@ package body Mia.Generator is
          return False;
       end Type_Has_String_Fields;
 
+      --  True when any field (own or inherited) is an enum (serialized as
+      --  a quoted, lowercased string).
+      function Type_Has_Enum_Fields (T : Type_Spec) return Boolean is
+      begin
+         for F of All_Fields (T) loop
+            if Is_Enum_Field (To_String (F.Type_Name)) then
+               return True;
+            end if;
+         end loop;
+         return False;
+      end Type_Has_Enum_Fields;
+
+      --  Declaring Ada packages of every enum referenced by a field of a
+      --  record in this package; needed as with-clauses.
+      function Enum_Packages return String_Sets.Set is
+         Result : String_Sets.Set;
+      begin
+         for T of Spec.Types loop
+            if Type_In_Pkg (T) then
+               for F of All_Fields (T) loop
+                  declare
+                     FT : constant String := To_String (F.Type_Name);
+                  begin
+                     if Is_Enum_Field (FT) then
+                        declare
+                           P : constant String :=
+                                 Impl_Package
+                                   (Resolve_Type (FT, Spec.Types));
+                        begin
+                           if P /= "" and then P /= Pkg_Name then
+                              String_Sets.Include
+                                (Result, To_Unbounded_String (P));
+                           end if;
+                        end;
+                     end if;
+                  end;
+               end loop;
+            end if;
+         end loop;
+         return Result;
+      end Enum_Packages;
+
       --  True when any type in this package has a String field
       function Has_String_Fields return Boolean is
       begin
@@ -1658,7 +1766,8 @@ package body Mia.Generator is
                            (if I = Last then ")" else ";");
             begin
                Ada.Text_IO.Put_Line
-                 (File, Prefix & F_Name & " : " & F_Type & Suffix);
+                 (File, Prefix & F_Name & " : "
+                        & Field_Ada_Type (F_Type) & Suffix);
             end;
          end loop;
       end Emit_Param_List;
@@ -1709,10 +1818,20 @@ package body Mia.Generator is
       begin
          Ada.Text_IO.Create (File, Ada.Text_IO.Out_File, Path);
 
-         if Has_String_Fields then
-            Pl ("with Ada.Strings.Unbounded;");
-            Ada.Text_IO.New_Line (File);
-         end if;
+         declare
+            Enum_Pkgs : constant String_Sets.Set := Enum_Packages;
+         begin
+            if Has_String_Fields then
+               Pl ("with Ada.Strings.Unbounded;");
+            end if;
+            --  Enum fields are stored and accessed as their external type.
+            for P of Enum_Pkgs loop
+               Pl ("with " & To_String (P) & ";");
+            end loop;
+            if Has_String_Fields or else not Enum_Pkgs.Is_Empty then
+               Ada.Text_IO.New_Line (File);
+            end if;
+         end;
          Pl ("package " & Pkg_Name & " is");
 
          declare
@@ -1776,7 +1895,8 @@ package body Mia.Generator is
                      begin
                         Pl ("   function " & F_Name
                             & " (Self : " & Type_Name
-                            & ") return " & F_Type & ";");
+                            & ") return " & Field_Ada_Type (F_Type)
+                            & ";");
                      end;
                   end loop;
 
@@ -1969,7 +2089,7 @@ package body Mia.Generator is
                      begin
                         Pl ("   function " & F_Name
                             & " (Self : " & Type_Name
-                            & ") return " & F_Type);
+                            & ") return " & Field_Ada_Type (F_Type));
                         Pl ("   is (" & Expr & ");");
                      end;
                   end loop;
@@ -2006,6 +2126,7 @@ package body Mia.Generator is
             Need_GNATCOLL : Boolean := False;
             Need_Float_IO : Boolean := False;
             Need_Fixed    : Boolean := False;
+            Enum_Pkgs     : constant String_Sets.Set := Enum_Packages;
          begin
             --  Determine required with clauses
             for T of Sorted loop
@@ -2049,6 +2170,13 @@ package body Mia.Generator is
             if Need_Fixed then
                Pl ("with Ada.Strings.Fixed;");
             end if;
+            --  Enum fields lowercase T'Image and reference T'Value.
+            if not Enum_Pkgs.Is_Empty then
+               Pl ("with Ada.Characters.Handling;");
+            end if;
+            for P of Enum_Pkgs loop
+               Pl ("with " & To_String (P) & ";");
+            end loop;
 
             Ada.Text_IO.New_Line (File);
             Pl ("package body " & Pkg_Name & " is");
@@ -2111,6 +2239,7 @@ package body Mia.Generator is
                            Pl ("      end Fmt_Float;");
                         end if;
                         if Type_Has_String_Fields (T)
+                          or else Type_Has_Enum_Fields (T)
                           or else not T.Links.Is_Empty
                         then
                            Pl ("      function Quote (S : String)"
@@ -2165,14 +2294,26 @@ package body Mia.Generator is
                                              then "Quote ("
                                                   & F_Name & " (Self))"
                                              elsif Is_Float_Field (F_Type)
-                                             then "Fmt_Float (Long_Float ("
-                                                  & F_Name & " (Self)))"
+                                             then
+                                                (if To_Lower (F_Type)
+                                                    = "long_float"
+                                                 then "Fmt_Float ("
+                                                      & F_Name & " (Self))"
+                                                 else "Fmt_Float (Long_Float ("
+                                                      & F_Name & " (Self)))")
                                              elsif Is_Bool_Field (F_Type)
                                              then "(if " & F_Name
                                                   & " (Self) then "
                                                   & Ada_Lit ("true")
                                                   & " else "
                                                   & Ada_Lit ("false") & ")"
+                                             elsif Is_Enum_Field (F_Type)
+                                             then "Quote"
+                                                  & " (Ada.Characters.Handling"
+                                                  & ".To_Lower ("
+                                                  & Field_Ada_Type (F_Type)
+                                                  & "'Image ("
+                                                  & F_Name & " (Self))))"
                                              else
                                                 "Ada.Strings.Fixed.Trim ("
                                                 & F_Name & " (Self)'Image,"
@@ -2249,6 +2390,8 @@ package body Mia.Generator is
                                           All_Flds.Element (I);
                               F_Name  : constant String :=
                                           To_String (F.Name);
+                              F_Type  : constant String :=
+                                          To_String (F.Type_Name);
                               Is_Last : constant Boolean :=
                                           (I = All_Last);
                               Pfx     : constant String :=
@@ -2257,10 +2400,20 @@ package body Mia.Generator is
                                            else "         ");
                               Sfx     : constant String :=
                                           (if Is_Last then ");" else ",");
+                              Get_Exp : constant String :=
+                                          "GNATCOLL.JSON.Get (Obj, """
+                                          & To_Lower (F_Name) & """)";
+                              --  Enum fields arrive as a JSON string; 'Value
+                              --  maps it back (case-insensitively) to the
+                              --  external enumeration value.
+                              Val_Exp : constant String :=
+                                          (if Is_Enum_Field (F_Type)
+                                           then Field_Ada_Type (F_Type)
+                                                & "'Value (String'("
+                                                & Get_Exp & "))"
+                                           else Get_Exp);
                            begin
-                              Pl (Pfx & F_Name
-                                  & " => GNATCOLL.JSON.Get (Obj, """
-                                  & To_Lower (F_Name) & """)" & Sfx);
+                              Pl (Pfx & F_Name & " => " & Val_Exp & Sfx);
                            end;
                         end loop;
                         Pl ("   end From_Json;");

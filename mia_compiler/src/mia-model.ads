@@ -7,11 +7,6 @@ package Mia.Model is
 
    --  Type declarations from the .mia spec
 
-   package String_Vectors is new Ada.Containers.Vectors
-     (Index_Type   => Positive,
-      Element_Type => Ada.Strings.Unbounded.Unbounded_String,
-      "="          => Ada.Strings.Unbounded."=");
-
    type Type_Field is record
       Name      : Ada.Strings.Unbounded.Unbounded_String;
       Type_Name : Ada.Strings.Unbounded.Unbounded_String;
@@ -52,7 +47,9 @@ package Mia.Model is
       --  Lowercased Kind aspect value; empty means abstract/intermediate
       case Kind is
          when Enum_Type =>
-            Literals : String_Vectors.Vector;
+            --  External enum: literals live in the declaring Ada package
+            --  and are discovered at runtime via the type's attributes.
+            null;
          when Record_Type =>
             Fields : Type_Field_Vectors.Vector;
       end case;
