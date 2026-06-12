@@ -1222,6 +1222,7 @@ package body Mia.Generator is
                S : constant String := Short_Name (Q);
             begin
                Pl ("      declare");
+               Pl ("         use type " & Q & ";");
                Pl ("         Buf   : Ada.Strings.Unbounded"
                    & ".Unbounded_String;");
                Pl ("         Item  : " & Q & " := " & Q & "'First;");
