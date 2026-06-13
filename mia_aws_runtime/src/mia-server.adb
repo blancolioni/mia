@@ -55,6 +55,8 @@ package body Mia.Server is
       Parameters : Mia.Server.Service_Parameters)
       return AWS.Response.Data;
 
+   WS     : AWS.Server.HTTP;
+   
    ----------
    -- Call --
    ----------
@@ -322,7 +324,6 @@ package body Mia.Server is
    -----------
 
    procedure Start is
-      WS     : AWS.Server.HTTP;
       Config : AWS.Config.Object := AWS.Config.Get_Current;
    begin
       Register ("/swagger", Mia.Registry.Handle_Swagger'Access);
@@ -331,8 +332,7 @@ package body Mia.Server is
       AWS.Config.Set.Server_Port (Config, 8080);
 
       AWS.Server.Start (WS, Service'Access, Config);
-      AWS.Server.Wait (Mode => AWS.Server.Q_Key_Pressed);
-      AWS.Server.Shutdown (WS);
+      AWS.Server.Wait (Mode => AWS.Server.No_Server);
    end Start;
 
    ----------
