@@ -2,6 +2,7 @@ with Ada.Containers.Doubly_Linked_Lists;
 with Ada.Containers.Indefinite_Doubly_Linked_Lists;
 with Ada.Strings.Fixed;
 with Ada.Strings.Unbounded;
+with Ada.Text_IO;
 
 with AWS.Config.Set;
 with AWS.Headers;
@@ -334,6 +335,17 @@ package body Mia.Server is
       AWS.Server.Shutdown (WS);
    end Start;
 
+   ----------
+   -- Stop --
+   ----------
+
+   procedure Stop (Message : String) is
+   begin
+      Ada.Text_IO.Put_Line ("stopping: " & Message);
+      AWS.Server.Shutdown (WS);
+      Ada.Text_IO.Put_Line ("stopped");
+   end Stop;
+   
    -----------
    -- Value --
    -----------

@@ -25,6 +25,7 @@ package Mia.Server is
       Allow_Anonymous : Boolean := True);
 
    procedure Start;
+   procedure Stop (Message : String);
 
 private
 
