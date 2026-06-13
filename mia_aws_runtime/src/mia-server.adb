@@ -56,7 +56,7 @@ package body Mia.Server is
       return AWS.Response.Data;
 
    WS     : AWS.Server.HTTP;
-   
+
    ----------
    -- Call --
    ----------
@@ -345,7 +345,7 @@ package body Mia.Server is
       AWS.Server.Shutdown (WS);
       Ada.Text_IO.Put_Line ("stopped");
    end Stop;
-   
+
    -----------
    -- Value --
    -----------
