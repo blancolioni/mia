@@ -694,6 +694,28 @@ package body Mia.Generator is
          return Result;
       end Concrete_Subtypes;
 
+      --  True when any record type in this spec names Type_Name as its
+      --  parent (i.e. Type_Name is the root or an intermediate of a
+      --  tagged-derivation hierarchy), regardless of Variant_Tag.
+      function Has_Subtypes (Type_Name : String) return Boolean is
+         Short : constant String := Short_Name (Type_Name);
+      begin
+         for T of Spec.Types loop
+            if T.Kind = Record_Type then
+               declare
+                  P : constant String := To_String (T.Parent);
+               begin
+                  if P = Type_Name or else P = Short
+                    or else Short_Name (P) = Short
+                  then
+                     return True;
+                  end if;
+               end;
+            end if;
+         end loop;
+         return False;
+      end Has_Subtypes;
+
       procedure Write_Array_Handler (Fn : Mia.Model.Function_Spec);
 
       procedure Write_Handler_Spec (Fn : Mia.Model.Function_Spec) is
@@ -947,7 +969,8 @@ package body Mia.Generator is
          Elem_Has_Links    : constant Boolean :=
                                Return_Type_Has_Links (Elem_Type);
          Elem_Polymorphic  : constant Boolean :=
-                               not Concrete_Subtypes (Elem_Type).Is_Empty;
+                               not Concrete_Subtypes (Elem_Type).Is_Empty
+                               or else Has_Subtypes (Elem_Type);
          Cb_Elem_Type      : constant String :=
                                (if Elem_Polymorphic
                                 then Elem_Type & "'Class"
