@@ -24,7 +24,9 @@ package Mia.Server is
       Method          : AWS.Status.Request_Method := AWS.Status.GET;
       Allow_Anonymous : Boolean := True);
 
-   procedure Start;
+   procedure Start
+     (Port         : Positive := 8080;
+      Service_Name : String   := "mia-server");
    procedure Stop (Message : String);
 
 private

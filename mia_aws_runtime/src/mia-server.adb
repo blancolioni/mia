@@ -323,13 +323,16 @@ package body Mia.Server is
    -- Start --
    -----------
 
-   procedure Start is
+   procedure Start
+     (Port         : Positive := 8080;
+      Service_Name : String   := "mia-server")
+   is
       Config : AWS.Config.Object := AWS.Config.Get_Current;
    begin
       Register ("/swagger", Mia.Registry.Handle_Swagger'Access);
 
-      AWS.Config.Set.Server_Name (Config, "mia-server");
-      AWS.Config.Set.Server_Port (Config, 8080);
+      AWS.Config.Set.Server_Name (Config, Service_Name);
+      AWS.Config.Set.Server_Port (Config, Port);
 
       AWS.Server.Start (WS, Service'Access, Config);
       AWS.Server.Wait (Mode => AWS.Server.No_Server);
