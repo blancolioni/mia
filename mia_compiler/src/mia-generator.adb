@@ -1163,6 +1163,7 @@ package body Mia.Generator is
             begin
                if Return_Type_Has_Links (Elem)
                  or else not Concrete_Subtypes (Elem).Is_Empty
+                 or else Has_Subtypes (Elem)
                then
                   Needs_Prefix := True;
                end if;
@@ -1190,6 +1191,8 @@ package body Mia.Generator is
       Pl ("with Mia.Server;");
       Ada.Text_IO.New_Line (File);
       Pl ("package body " & Pkg & ".Server is");
+      Ada.Text_IO.New_Line (File);
+      Pl ("   pragma Style_Checks (""-M"");");
       Ada.Text_IO.New_Line (File);
       if Session_Type_S /= "" then
          Pl ("   type Session_Reference is");
