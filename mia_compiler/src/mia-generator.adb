@@ -664,10 +664,10 @@ package body Mia.Generator is
       function Concrete_Subtypes
         (Type_Name : String) return Mia.Model.Type_Vectors.Vector
       is
-         Short : constant String := Short_Name (Type_Name);
          Result : Type_Vectors.Vector;
 
          procedure Collect (Name : String) is
+            Short : constant String := Short_Name (Name);
          begin
             for T of Spec.Types loop
                if T.Kind = Record_Type then
