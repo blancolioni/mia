@@ -340,10 +340,9 @@ package body Mia.Server is
    ----------
 
    procedure Stop (Message : String) is
+      pragma Unreferenced (Message);
    begin
-      Ada.Text_IO.Put_Line ("stopping: " & Message);
       AWS.Server.Shutdown (WS);
-      Ada.Text_IO.Put_Line ("stopped");
    end Stop;
 
    -----------
