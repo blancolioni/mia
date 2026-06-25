@@ -1860,6 +1860,8 @@ package body Mia.Generator is
             end if;
          end;
          Pl ("package " & Pkg_Name & " is");
+         Ada.Text_IO.New_Line (File);
+         Pl ("   pragma Style_Checks (""-M"");");
 
          declare
             Sorted : constant Type_Vectors.Vector := Sorted_Types;
@@ -2207,6 +2209,8 @@ package body Mia.Generator is
 
             Ada.Text_IO.New_Line (File);
             Pl ("package body " & Pkg_Name & " is");
+            Ada.Text_IO.New_Line (File);
+            Pl ("   pragma Style_Checks (""-M"");");
 
             for T of Sorted loop
                if Is_Abstract_Type (T) then
