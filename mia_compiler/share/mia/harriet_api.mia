@@ -1,0 +1,89 @@
+package Harriet_API
+  with Session => Harriet.Server.Sessions.Session_Interface
+is
+
+   type Harriet.Server.Responses.State_Response is
+      record
+         Current_Turn : Integer;
+      end record;
+
+   type Harriet.Server.Responses.Entity_Response is
+      record
+         Id : String;
+      end record;
+
+   type Harriet.Server.Responses.Named_Entity_Response is
+     new Entity_Response with
+      record
+         Name : String;
+      end record;
+
+   type Harriet.Server.Responses.System_Response is
+     new Named_Entity_Response with
+      record
+         X      : Long_Float;
+	 Y      : Long_Float;
+      end record;
+
+   type Harriet.Server.Responses.Visited_System_Response is
+     new System_Response with
+      record
+         Owner : String;
+         PV    : Integer;
+      end record;
+
+   type Harriet.Server.Responses.Owned_System_Response is
+     new Visited_System_Response with
+      record
+         PI    : Natural;
+      end record;
+
+   type Harriet.Server.Responses.Sector_Vertex_Response is
+      record
+         System : String;
+	 X      : Long_Float;
+	 Y      : Long_Float;
+      end record;
+
+   function Login
+     (Account_Name  : String)
+     return String
+    with Method => Post,
+         Path   => "login",
+         Impl   => Harriet.Server.Accounts.Login,
+	 Auth   => Anonymous;
+
+   function Get_Status
+     return State_Response
+     with Path => "status",
+          Impl => Harriet.Server.State.Get_Status;
+
+   function Get_All_Systems return array of System_Response
+      with Path => "systems",
+           Scanner => Harriet.Server.Systems.Scan;
+
+   function Get_Sector_Vertices return array of Sector_Vertex_Response
+      with Path => "vertices",
+           Scanner => Harriet.Server.Systems.Scan_Vertices;
+   
+   function Get_System (Slug : String) return System_Response
+      with Path => "systems/{slug}",
+           Impl => Harriet.Server.Systems.Get;
+
+   channel Game_Feed
+     with Path => "feed",
+          Auth => Required
+   is
+      emit System_Updated : System_Response;
+      emit Turn_Advanced  : State_Response;
+
+      on Subscribe   (Slug : String)
+         with Impl => Harriet.Server.Feed.Subscribe;
+      on Unsubscribe (Slug : String)
+         with Impl => Harriet.Server.Feed.Unsubscribe;
+
+      on_open  Harriet.Server.Feed.Connected;
+      on_close Harriet.Server.Feed.Disconnected;
+   end Game_Feed;
+
+end Harriet_API;

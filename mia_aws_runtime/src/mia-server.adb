@@ -2,11 +2,11 @@ with Ada.Containers.Doubly_Linked_Lists;
 with Ada.Containers.Indefinite_Doubly_Linked_Lists;
 with Ada.Strings.Fixed;
 with Ada.Strings.Unbounded;
-with Ada.Text_IO;
 
 with AWS.Config.Set;
 with AWS.Headers;
 with AWS.Messages;
+with AWS.Net.WebSocket.Registry.Control;
 with AWS.Parameters;
 with AWS.Response.Set;
 with AWS.Server;
@@ -153,11 +153,45 @@ package body Mia.Server is
             Handler         => Handler,
             Method          => Method,
             Allow_Anonymous => Allow_Anonymous));
-      if Method = AWS.Status.POST or else Method = AWS.Status.GET then
+      if Method = AWS.Status.POST
+        or else Method = AWS.Status.GET
+        or else Method = AWS.Status.PUT
+      then
          Register (Route, Handle_Options'Access,
                    AWS.Status.OPTIONS, Allow_Anonymous => True);
       end if;
    end Register;
+
+   -------------------
+   -- Session_Id_Of --
+   -------------------
+
+   function Session_Id_Of (Request : AWS.Status.Data) return String is
+      Headers       : constant AWS.Headers.List :=
+                        AWS.Status.Header (Request);
+      Auth_Header   : constant String :=
+                        Headers.Get_Values ("Authorization");
+      Bearer_Prefix : constant String := "Bearer ";
+   begin
+      if Auth_Header'Length > Bearer_Prefix'Length
+        and then Auth_Header
+                   (Auth_Header'First
+                    .. Auth_Header'First + Bearer_Prefix'Length - 1)
+                 = Bearer_Prefix
+      then
+         return Auth_Header
+                  (Auth_Header'First + Bearer_Prefix'Length
+                   .. Auth_Header'Last);
+      end if;
+      --  Fall back to a "token" query parameter (WebSocket handshakes
+      --  from a browser cannot carry an Authorization header).
+      declare
+         Query : constant AWS.Parameters.List :=
+                   AWS.Status.Parameters (Request);
+      begin
+         return Query.Get ("token");
+      end;
+   end Session_Id_Of;
 
    -------------
    -- Service --
@@ -188,21 +222,7 @@ package body Mia.Server is
                    Full_URL (Full_URL'First .. Last) & "/";
       Query    : constant AWS.Parameters.List :=
                    AWS.Status.Parameters (Request);
-      Headers  : constant AWS.Headers.List :=
-                   AWS.Status.Header (Request);
-      Auth_Header : constant String := Headers.Get_Values ("Authorization");
-      Bearer_Prefix : constant String := "Bearer ";
-      Session_Id : constant String :=
-                     (if Auth_Header'Length > Bearer_Prefix'Length
-                        and then Auth_Header
-                                   (Auth_Header'First
-                                    .. Auth_Header'First
-                                       + Bearer_Prefix'Length - 1)
-                                 = Bearer_Prefix
-                      then Auth_Header
-                             (Auth_Header'First + Bearer_Prefix'Length
-                              .. Auth_Header'Last)
-                      else "");
+      Session_Id : constant String := Session_Id_Of (Request);
    begin
 
       for Element of Route_List loop
@@ -254,7 +274,7 @@ package body Mia.Server is
 
                   AWS.Response.Set.Add_Header
                     (Response, "Access-Control-Allow-Methods",
-                     "GET, POST, OPTIONS");
+                     "GET, POST, PUT, OPTIONS");
 
                   AWS.Response.Set.Add_Header
                     (Response, "Access-Control-Allow-Headers",
@@ -335,6 +355,9 @@ package body Mia.Server is
       AWS.Config.Set.Server_Port (Config, Port);
 
       AWS.Server.Start (WS, Service'Access, Config);
+      --  Start the WebSocket sender/receiver tasks so registered
+      --  channel factories can accept upgrades and push messages.
+      AWS.Net.WebSocket.Registry.Control.Start;
       AWS.Server.Wait (Mode => AWS.Server.No_Server);
    end Start;
 
@@ -345,6 +368,7 @@ package body Mia.Server is
    procedure Stop (Message : String) is
       pragma Unreferenced (Message);
    begin
+      AWS.Net.WebSocket.Registry.Control.Shutdown;
       AWS.Server.Shutdown (WS);
    end Stop;
 

@@ -7,9 +7,12 @@ package Mia.Model is
 
    --  Type declarations from the .mia spec
 
+   --  Omit_Empty ('with Omit_Empty' on a String field) leaves the key
+   --  out of the generated JSON altogether when the value is "".
    type Type_Field is record
-      Name      : Ada.Strings.Unbounded.Unbounded_String;
-      Type_Name : Ada.Strings.Unbounded.Unbounded_String;
+      Name       : Ada.Strings.Unbounded.Unbounded_String;
+      Type_Name  : Ada.Strings.Unbounded.Unbounded_String;
+      Omit_Empty : Boolean := False;
    end record;
 
    package Type_Field_Vectors is new Ada.Containers.Vectors
@@ -90,11 +93,41 @@ package Mia.Model is
      (Index_Type   => Positive,
       Element_Type => Function_Spec);
 
+   --  A server -> client push event on a channel. Payload_Type names a
+   --  declared response type; its To_Json is reused for the wire form.
+   type Emit_Spec is record
+      Name         : Ada.Strings.Unbounded.Unbounded_String;
+      Payload_Type : Ada.Strings.Unbounded.Unbounded_String;
+   end record;
+
+   package Emit_Vectors is new Ada.Containers.Vectors
+     (Index_Type   => Positive,
+      Element_Type => Emit_Spec);
+
+   --  A WebSocket channel. Handlers are the client -> server commands,
+   --  dispatched by the "action" discriminator; each reuses Function_Spec
+   --  (only Name/Parameters/Impl are meaningful for channel handlers).
+   type Channel_Spec is record
+      Name     : Ada.Strings.Unbounded.Unbounded_String;
+      Path     : Ada.Strings.Unbounded.Unbounded_String;
+      Auth     : Auth_Kind := Inherited;
+      Emits    : Emit_Vectors.Vector;
+      Handlers : Function_Vectors.Vector;
+      On_Open  : Ada.Strings.Unbounded.Unbounded_String;
+      On_Close : Ada.Strings.Unbounded.Unbounded_String;
+      On_Error : Ada.Strings.Unbounded.Unbounded_String;
+   end record;
+
+   package Channel_Vectors is new Ada.Containers.Vectors
+     (Index_Type   => Positive,
+      Element_Type => Channel_Spec);
+
    type Package_Spec is record
       Name         : Ada.Strings.Unbounded.Unbounded_String;
       Functions    : Function_Vectors.Vector;
       Session_Type : Ada.Strings.Unbounded.Unbounded_String;
       Types        : Type_Vectors.Vector;
+      Channels     : Channel_Vectors.Vector;
    end record;
 
 end Mia.Model;

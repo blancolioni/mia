@@ -16,6 +16,11 @@ package Mia.Registry is
       Allow_Anonymous : Boolean := True;
       Body_Schema     : String  := "");
 
+   procedure Register_Channel (Channel : String);
+   --  Register a WebSocket channel description (a JSON object). These are
+   --  surfaced in the OpenAPI document under the "x-websockets" vendor
+   --  extension, since OpenAPI 3.0 has no native WebSocket support.
+
    function Handle_Swagger
      (Session_Id : String;
       URI        : String;

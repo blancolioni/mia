@@ -59,8 +59,13 @@ package body Mia.Generator is
       Types : Mia.Model.Type_Vectors.Vector)
       return String;
 
+   function Spec_Withs
+     (Spec : Mia.Model.Package_Spec)
+      return String_Sets.Set;
+
    procedure Write_Spec
-     (Pkg        : String;
+     (Spec       : Mia.Model.Package_Spec;
+      Pkg        : String;
       Output_Dir : String;
       File_Base  : String);
 
@@ -510,24 +515,78 @@ package body Mia.Generator is
    --  Spec file
    --  ---------------------------------------------------------------
 
+   --  The packages the spec file withs.  Push procedures reference the
+   --  payload types, so the spec withs their declaring Ada packages.
+   --  Write_Body leaves these out of its own list, since a with that
+   --  the spec already has is redundant in the body (GNAT -gnatwr).
+   function Spec_Withs
+     (Spec : Mia.Model.Package_Spec)
+      return String_Sets.Set
+   is
+      Withs : String_Sets.Set;
+   begin
+      for C of Spec.Channels loop
+         for E of C.Emits loop
+            declare
+               Payload : constant String :=
+                           Resolve_Type
+                             (To_String (E.Payload_Type), Spec.Types);
+               Pkg_Of  : constant String := Impl_Package (Payload);
+            begin
+               if Pkg_Of /= "" then
+                  String_Sets.Include (Withs, To_Unbounded_String (Pkg_Of));
+               end if;
+            end;
+         end loop;
+      end loop;
+      return Withs;
+   end Spec_Withs;
+
    procedure Write_Spec
-     (Pkg        : String;
+     (Spec       : Mia.Model.Package_Spec;
+      Pkg        : String;
       Output_Dir : String;
       File_Base  : String)
    is
-      File : Ada.Text_IO.File_Type;
-      Path : constant String :=
-               Ada.Directories.Compose (Output_Dir, File_Base, "ads");
+      File  : Ada.Text_IO.File_Type;
+      Path  : constant String :=
+                Ada.Directories.Compose (Output_Dir, File_Base, "ads");
+      Withs : constant String_Sets.Set := Spec_Withs (Spec);
+
+      procedure Pl (S : String) is
+      begin
+         Ada.Text_IO.Put_Line (File, S);
+      end Pl;
    begin
       Ada.Text_IO.Create (File, Ada.Text_IO.Out_File, Path);
-      Ada.Text_IO.Put_Line
-        (File, "package " & Pkg & ".Server is");
+      for W of Withs loop
+         Pl ("with " & To_String (W) & ";");
+      end loop;
+      if not Withs.Is_Empty then
+         Ada.Text_IO.New_Line (File);
+      end if;
+      Pl ("package " & Pkg & ".Server is");
       Ada.Text_IO.New_Line (File);
-      Ada.Text_IO.Put_Line
-        (File,
-         "   procedure Register (Prefix : String := """");");
+      Pl ("   procedure Register (Prefix : String := """");");
+
+      --  Server -> client push procedures, one per channel emit.
+      for C of Spec.Channels loop
+         for E of C.Emits loop
+            declare
+               Payload : constant String :=
+                           Resolve_Type
+                             (To_String (E.Payload_Type), Spec.Types);
+            begin
+               Ada.Text_IO.New_Line (File);
+               Pl ("   procedure Send_" & To_String (E.Name));
+               Pl ("     (Session_Id : String;");
+               Pl ("      Payload    : " & Payload & ");");
+            end;
+         end loop;
+      end loop;
+
       Ada.Text_IO.New_Line (File);
-      Ada.Text_IO.Put_Line (File, "end " & Pkg & ".Server;");
+      Pl ("end " & Pkg & ".Server;");
       Ada.Text_IO.Close (File);
    end Write_Spec;
 
@@ -642,6 +701,21 @@ package body Mia.Generator is
                Add (Resolve_Type (To_String (P.Type_Name), Spec.Types));
             end loop;
          end loop;
+         for C of Spec.Channels loop
+            Add (To_String (C.On_Open));
+            Add (To_String (C.On_Close));
+            Add (To_String (C.On_Error));
+            for E of C.Emits loop
+               Add (Resolve_Type (To_String (E.Payload_Type), Spec.Types));
+            end loop;
+            for H of C.Handlers loop
+               Add (To_String (H.Impl));
+               for P of H.Parameters loop
+                  Add (Resolve_Type (To_String (P.Type_Name), Spec.Types));
+               end loop;
+            end loop;
+         end loop;
+         String_Sets.Difference (Withs, Spec_Withs (Spec));
       end Collect_Withs;
 
       procedure Pl (S : String) is
@@ -1131,6 +1205,420 @@ package body Mia.Generator is
          Ada.Text_IO.New_Line (File);
       end Write_Array_Handler;
 
+      --  ------------------------------------------------------------
+      --  WebSocket channels
+      --  ------------------------------------------------------------
+
+      procedure Write_Channels is
+
+         --  A channel carries a resolved session only when the package
+         --  declares a Session type and the channel is not anonymous.
+         function Auth_Channel (C : Channel_Spec) return Boolean is
+         begin
+            return Session_Type_S /= ""
+              and then C.Auth /= Mia.Model.Anonymous;
+         end Auth_Channel;
+
+         --  Emit the JSON-decode declaration for one handler parameter.
+         procedure Emit_Param_Decode (Indent : String; P : Parameter_Type)
+         is
+            P_Name : constant String := To_String (P.Name);
+            P_Type : constant String :=
+                       Resolve_Type (To_String (P.Type_Name), Spec.Types);
+            Key    : constant String := To_Lower (P_Name);
+            Get_E  : constant String :=
+                       "GNATCOLL.JSON.Get (Obj, """ & Key & """)";
+         begin
+            if To_Lower (P_Type) = "string" then
+               Pl (Indent & P_Name & " : constant String :=");
+               Pl (Indent & "   " & Get_E & ";");
+            else
+               Pl (Indent & P_Name & " : constant " & P_Type & " :=");
+               Pl (Indent & "   " & P_Type
+                   & "'Value (String'(" & Get_E & "));");
+            end if;
+         end Emit_Param_Decode;
+
+         --  Build the actual-parameter list for an Impl call.
+         function Call_Actuals
+           (C : Channel_Spec; H : Function_Spec) return String
+         is
+            R : Unbounded_String := To_Unbounded_String ("Sid");
+         begin
+            if Auth_Channel (C) then
+               Append (R, ", Session_Reference (Raw)");
+            end if;
+            for P of H.Parameters loop
+               Append (R, ", " & To_String (P.Name));
+            end loop;
+            return To_String (R);
+         end Call_Actuals;
+
+      begin
+         for C of Spec.Channels loop
+            declare
+               CN   : constant String := To_String (C.Name);
+               Auth : constant Boolean := Auth_Channel (C);
+            begin
+               Separator ("Channel " & CN);
+
+               --  Per-session set of live socket ids.
+               Pl ("   package " & CN & "_UID_Sets is new"
+                   & " Ada.Containers.Ordered_Sets");
+               Pl ("     (Element_Type => AWS.Net.WebSocket.UID,");
+               Pl ("      ""<""          => AWS.Net.WebSocket.""<"",");
+               Pl ("      ""=""          => AWS.Net.WebSocket.""="");");
+               Ada.Text_IO.New_Line (File);
+               Pl ("   package " & CN & "_Client_Maps is new");
+               Pl ("     Ada.Containers.Indefinite_Hashed_Maps");
+               Pl ("       (Key_Type        => String,");
+               Pl ("        Element_Type    => "
+                   & CN & "_UID_Sets.Set,");
+               Pl ("        Hash            => Ada.Strings.Hash,");
+               Pl ("        Equivalent_Keys => ""="",");
+               Pl ("        ""=""             => "
+                   & CN & "_UID_Sets.""="");");
+               Ada.Text_IO.New_Line (File);
+
+               --  Thread-safe session -> sockets registry.
+               Pl ("   protected " & CN & "_Clients is");
+               Pl ("      procedure Add");
+               Pl ("        (Session_Id : String;"
+                   & " Id : AWS.Net.WebSocket.UID);");
+               Pl ("      procedure Remove");
+               Pl ("        (Session_Id : String;"
+                   & " Id : AWS.Net.WebSocket.UID);");
+               Pl ("      function Targets (Session_Id : String)");
+               Pl ("        return " & CN & "_UID_Sets.Set;");
+               Pl ("   private");
+               Pl ("      Map : " & CN & "_Client_Maps.Map;");
+               Pl ("   end " & CN & "_Clients;");
+               Ada.Text_IO.New_Line (File);
+
+               Pl ("   protected body " & CN & "_Clients is");
+               Pl ("      procedure Add");
+               Pl ("        (Session_Id : String;"
+                   & " Id : AWS.Net.WebSocket.UID)");
+               Pl ("      is");
+               Pl ("         S : " & CN & "_UID_Sets.Set :=");
+               Pl ("               (if Map.Contains (Session_Id)");
+               Pl ("                then Map.Element (Session_Id)");
+               Pl ("                else " & CN & "_UID_Sets.Empty_Set);");
+               Pl ("      begin");
+               Pl ("         S.Include (Id);");
+               Pl ("         Map.Include (Session_Id, S);");
+               Pl ("      end Add;");
+               Ada.Text_IO.New_Line (File);
+               Pl ("      procedure Remove");
+               Pl ("        (Session_Id : String;"
+                   & " Id : AWS.Net.WebSocket.UID)");
+               Pl ("      is");
+               Pl ("         S : " & CN & "_UID_Sets.Set :=");
+               Pl ("               (if Map.Contains (Session_Id)");
+               Pl ("                then Map.Element (Session_Id)");
+               Pl ("                else " & CN & "_UID_Sets.Empty_Set);");
+               Pl ("      begin");
+               Pl ("         S.Exclude (Id);");
+               Pl ("         if S.Is_Empty then");
+               Pl ("            if Map.Contains (Session_Id) then");
+               Pl ("               Map.Delete (Session_Id);");
+               Pl ("            end if;");
+               Pl ("         else");
+               Pl ("            Map.Include (Session_Id, S);");
+               Pl ("         end if;");
+               Pl ("      end Remove;");
+               Ada.Text_IO.New_Line (File);
+               Pl ("      function Targets (Session_Id : String)");
+               Pl ("        return " & CN & "_UID_Sets.Set is");
+               Pl ("      begin");
+               Pl ("         if Map.Contains (Session_Id) then");
+               Pl ("            return Map.Element (Session_Id);");
+               Pl ("         else");
+               Pl ("            return " & CN & "_UID_Sets.Empty_Set;");
+               Pl ("         end if;");
+               Pl ("      end Targets;");
+               Pl ("   end " & CN & "_Clients;");
+               Ada.Text_IO.New_Line (File);
+
+               --  Socket type + dispatch declarations.
+               Pl ("   type " & CN & "_Socket is new"
+                   & " AWS.Net.WebSocket.Object with record");
+               Pl ("      Session_Id :"
+                   & " Ada.Strings.Unbounded.Unbounded_String;");
+               Pl ("   end record;");
+               Ada.Text_IO.New_Line (File);
+               Pl ("   function Create_" & CN);
+               Pl ("     (Socket  : AWS.Net.Socket_Access;");
+               Pl ("      Request : AWS.Status.Data)");
+               Pl ("      return AWS.Net.WebSocket.Object'Class;");
+               Ada.Text_IO.New_Line (File);
+               Pl ("   overriding procedure On_Open");
+               Pl ("     (Socket : in out " & CN
+                   & "_Socket; Message : String);");
+               Pl ("   overriding procedure On_Close");
+               Pl ("     (Socket : in out " & CN
+                   & "_Socket; Message : String);");
+               Pl ("   overriding procedure On_Message");
+               Pl ("     (Socket : in out " & CN
+                   & "_Socket; Message : String);");
+               Ada.Text_IO.New_Line (File);
+
+               --  Factory.
+               Pl ("   function Create_" & CN);
+               Pl ("     (Socket  : AWS.Net.Socket_Access;");
+               Pl ("      Request : AWS.Status.Data)");
+               Pl ("      return AWS.Net.WebSocket.Object'Class");
+               Pl ("   is");
+               Pl ("   begin");
+               Pl ("      return " & CN & "_Socket'");
+               Pl ("        (AWS.Net.WebSocket.Object");
+               Pl ("           (AWS.Net.WebSocket.Create"
+                   & " (Socket, Request)) with");
+               Pl ("         Session_Id =>");
+               Pl ("           Ada.Strings.Unbounded.To_Unbounded_String");
+               Pl ("             (Mia.Server.Session_Id_Of (Request)));");
+               Pl ("   end Create_" & CN & ";");
+               Ada.Text_IO.New_Line (File);
+
+               --  On_Open.
+               Pl ("   overriding procedure On_Open");
+               Pl ("     (Socket : in out " & CN
+                   & "_Socket; Message : String)");
+               Pl ("   is");
+               Pl ("      pragma Unreferenced (Message);");
+               Pl ("      Sid : constant String :=");
+               Pl ("              Ada.Strings.Unbounded.To_String"
+                   & " (Socket.Session_Id);");
+               if Auth then
+                  Pl ("      Raw : constant access"
+                      & " Mia.Sessions.Session_Interface'Class :=");
+                  Pl ("              Mia.Sessions.Get (Sid);");
+               end if;
+               Pl ("   begin");
+               if Auth then
+                  Pl ("      if Raw = null then");
+                  Pl ("         Socket.Close (""unauthorized"");");
+                  Pl ("         return;");
+                  Pl ("      end if;");
+               end if;
+               Pl ("      " & CN & "_Clients.Add (Sid, Socket.Get_UID);");
+               if Length (C.On_Open) > 0 then
+                  Pl ("      " & To_String (C.On_Open)
+                      & " (Sid" & (if Auth
+                                   then ", Session_Reference (Raw)"
+                                   else "") & ");");
+               end if;
+               Pl ("   end On_Open;");
+               Ada.Text_IO.New_Line (File);
+
+               --  On_Close.
+               Pl ("   overriding procedure On_Close");
+               Pl ("     (Socket : in out " & CN
+                   & "_Socket; Message : String)");
+               Pl ("   is");
+               Pl ("      pragma Unreferenced (Message);");
+               Pl ("      Sid : constant String :=");
+               Pl ("              Ada.Strings.Unbounded.To_String"
+                   & " (Socket.Session_Id);");
+               if Auth and then Length (C.On_Close) > 0 then
+                  Pl ("      Raw : constant access"
+                      & " Mia.Sessions.Session_Interface'Class :=");
+                  Pl ("              Mia.Sessions.Get (Sid);");
+               end if;
+               Pl ("   begin");
+               Pl ("      " & CN
+                   & "_Clients.Remove (Sid, Socket.Get_UID);");
+               if Length (C.On_Close) > 0 then
+                  if Auth then
+                     Pl ("      if Raw /= null then");
+                     Pl ("         " & To_String (C.On_Close)
+                         & " (Sid, Session_Reference (Raw));");
+                     Pl ("      end if;");
+                  else
+                     Pl ("      " & To_String (C.On_Close) & " (Sid);");
+                  end if;
+               end if;
+               Pl ("   end On_Close;");
+               Ada.Text_IO.New_Line (File);
+
+               --  On_Message: dispatch on the "action" discriminator.
+               Pl ("   overriding procedure On_Message");
+               Pl ("     (Socket : in out " & CN
+                   & "_Socket; Message : String)");
+               Pl ("   is");
+               if C.Handlers.Is_Empty then
+                  Pl ("      pragma Unreferenced (Socket, Message);");
+                  Pl ("   begin");
+                  Pl ("      null;");
+                  Pl ("   end On_Message;");
+                  Ada.Text_IO.New_Line (File);
+               else
+                  Pl ("      Sid : constant String :=");
+                  Pl ("              Ada.Strings.Unbounded.To_String"
+                      & " (Socket.Session_Id);");
+                  Pl ("      Obj : constant GNATCOLL.JSON.JSON_Value :=");
+                  Pl ("              GNATCOLL.JSON.Read (Message);");
+                  Pl ("      Action : constant String :=");
+                  Pl ("                 GNATCOLL.JSON.Get"
+                      & " (Obj, ""action"");");
+                  if Auth then
+                     Pl ("      Raw : constant access"
+                         & " Mia.Sessions.Session_Interface'Class :=");
+                     Pl ("              Mia.Sessions.Get (Sid);");
+                  end if;
+                  Pl ("   begin");
+                  if Auth then
+                     Pl ("      if Raw = null then");
+                     Pl ("         return;");
+                     Pl ("      end if;");
+                  end if;
+                  declare
+                     First : Boolean := True;
+                  begin
+                     for H of C.Handlers loop
+                        declare
+                           HN  : constant String := To_String (H.Name);
+                           Act : constant String := To_Lower (HN);
+                           Kw  : constant String :=
+                                   (if First then "      if"
+                                    else "      elsif");
+                        begin
+                           Pl (Kw & " Action = """ & Act & """ then");
+                           if H.Parameters.Is_Empty then
+                              Pl ("         " & To_String (H.Impl)
+                                  & " (" & Call_Actuals (C, H) & ");");
+                           else
+                              Pl ("         declare");
+                              for P of H.Parameters loop
+                                 Emit_Param_Decode ("            ", P);
+                              end loop;
+                              Pl ("         begin");
+                              Pl ("            " & To_String (H.Impl)
+                                  & " (" & Call_Actuals (C, H) & ");");
+                              Pl ("         end;");
+                           end if;
+                           First := False;
+                        end;
+                     end loop;
+                     Pl ("      end if;");
+                  end;
+                  Pl ("   end On_Message;");
+                  Ada.Text_IO.New_Line (File);
+               end if;
+
+               --  Push procedures (bodies).
+               for E of C.Emits loop
+                  declare
+                     EN      : constant String := To_String (E.Name);
+                     Payload : constant String :=
+                                 Resolve_Type
+                                   (To_String (E.Payload_Type),
+                                    Spec.Types);
+                     P_Pkg   : constant String := Impl_Package (Payload);
+                     Has_Lnk : constant Boolean :=
+                                 Return_Type_Has_Links (Payload);
+                     To_J    : constant String :=
+                                 P_Pkg & ".To_Json (Payload"
+                                 & (if Has_Lnk
+                                    then ", Ada.Strings.Unbounded"
+                                         & ".To_String (Registered_Prefix)"
+                                    else "")
+                                 & ")";
+                  begin
+                     Separator ("Send_" & EN);
+                     Pl ("   procedure Send_" & EN);
+                     Pl ("     (Session_Id : String;");
+                     Pl ("      Payload    : " & Payload & ")");
+                     Pl ("   is");
+                     Pl ("      Msg : constant String := " & To_J & ";");
+                     Pl ("      Ids : constant " & CN & "_UID_Sets.Set :=");
+                     Pl ("              " & CN
+                         & "_Clients.Targets (Session_Id);");
+                     Pl ("   begin");
+                     Pl ("      for Id of Ids loop");
+                     Pl ("         if AWS.Net.WebSocket.Registry"
+                         & ".Is_Registered (Id) then");
+                     Pl ("            AWS.Net.WebSocket.Registry.Send");
+                     Pl ("              (AWS.Net.WebSocket.Registry"
+                         & ".Create (Id), Msg);");
+                     Pl ("         end if;");
+                     Pl ("      end loop;");
+                     Pl ("   end Send_" & EN & ";");
+                     Ada.Text_IO.New_Line (File);
+                  end;
+               end loop;
+            end;
+         end loop;
+      end Write_Channels;
+
+      --  Build the JSON that follows the path value in a channel's
+      --  "x-websockets" entry: the auth mode and the message catalogue.
+      --  The leading path segment is emitted separately so the runtime
+      --  mount Prefix can be concatenated in.
+      function Channel_Tail_Json (C : Channel_Spec) return String is
+         DQ    : constant String := (1 => '"');
+         J     : Unbounded_String;
+         Auth  : constant String :=
+                   (if Session_Type_S /= ""
+                      and then C.Auth /= Mia.Model.Anonymous
+                    then "required" else "anonymous");
+         First : Boolean;
+      begin
+         Append (J, "/" & To_String (C.Path) & DQ & ",");
+         Append (J, DQ & "auth" & DQ & ":" & DQ & Auth & DQ & ",");
+         Append (J, DQ & "messages" & DQ & ":{");
+         --  server -> client push events
+         Append (J, DQ & "server" & DQ & ":[");
+         First := True;
+         for E of C.Emits loop
+            declare
+               Payload : constant String :=
+                           Resolve_Type
+                             (To_String (E.Payload_Type), Spec.Types);
+            begin
+               if not First then
+                  Append (J, ",");
+               end if;
+               First := False;
+               Append (J, "{" & DQ & "event" & DQ & ":"
+                       & DQ & To_String (E.Name) & DQ & ","
+                       & DQ & "schema" & DQ & ":"
+                       & Schema_Ref (Short_Name (Payload)) & "}");
+            end;
+         end loop;
+         Append (J, "],");
+         --  client -> server commands (dispatched by "action")
+         Append (J, DQ & "client" & DQ & ":[");
+         First := True;
+         for H of C.Handlers loop
+            if not First then
+               Append (J, ",");
+            end if;
+            First := False;
+            Append (J, "{" & DQ & "action" & DQ & ":"
+                    & DQ & To_Lower (To_String (H.Name)) & DQ & ","
+                    & DQ & "params" & DQ & ":[");
+            declare
+               First_P : Boolean := True;
+            begin
+               for P of H.Parameters loop
+                  if not First_P then
+                     Append (J, ",");
+                  end if;
+                  First_P := False;
+                  Append (J, "{" & DQ & "name" & DQ & ":"
+                          & DQ & To_Lower (To_String (P.Name)) & DQ & ","
+                          & DQ & "type" & DQ & ":" & DQ
+                          & Json_Schema_Type (To_String (P.Type_Name))
+                          & DQ & "}");
+               end loop;
+            end;
+            Append (J, "]}");
+         end loop;
+         Append (J, "]}}");
+         return To_String (J);
+      end Channel_Tail_Json;
+
    begin
       Collect_Withs;
       Ada.Text_IO.Create (File, Ada.Text_IO.Out_File, Path);
@@ -1143,6 +1631,7 @@ package body Mia.Generator is
          Has_Enums     : constant Boolean :=
                            (for some T of Spec.Types =>
                               T.Kind = Mia.Model.Enum_Type);
+         Has_Channels  : constant Boolean := not Spec.Channels.Is_Empty;
       begin
          for Fn of Spec.Functions loop
             if Fn.Is_Array
@@ -1169,6 +1658,27 @@ package body Mia.Generator is
                end if;
             end;
          end loop;
+         --  Channels always parse JSON and store the session id as an
+         --  Unbounded_String; an auth channel resolves the session, and a
+         --  payload type with links needs the mount prefix threaded.
+         if Has_Channels then
+            Needs_Json := True;
+            for C of Spec.Channels loop
+               if Session_Type_S /= ""
+                 and then C.Auth /= Mia.Model.Anonymous
+               then
+                  Needs_Session := True;
+               end if;
+               for E of C.Emits loop
+                  if Return_Type_Has_Links
+                       (Resolve_Type (To_String (E.Payload_Type),
+                                      Spec.Types))
+                  then
+                     Needs_Prefix := True;
+                  end if;
+               end loop;
+            end loop;
+         end if;
          if Needs_Json then
             Pl ("with GNATCOLL.JSON;");
          end if;
@@ -1176,12 +1686,20 @@ package body Mia.Generator is
             Pl ("with AWS.Messages;");
             Pl ("with Mia.Sessions;");
          end if;
-         if Needs_Prefix or else Has_Enums then
+         if Needs_Prefix or else Has_Enums or else Has_Channels then
             Pl ("with Ada.Strings.Unbounded;");
          end if;
          --  Runtime enum schema building lowercases T'Image.
          if Has_Enums then
             Pl ("with Ada.Characters.Handling;");
+         end if;
+         if Has_Channels then
+            Pl ("with Ada.Containers.Indefinite_Hashed_Maps;");
+            Pl ("with Ada.Containers.Ordered_Sets;");
+            Pl ("with Ada.Strings.Hash;");
+            Pl ("with AWS.Net;");
+            Pl ("with AWS.Net.WebSocket;");
+            Pl ("with AWS.Net.WebSocket.Registry;");
          end if;
       end;
       for W of Withs loop
@@ -1215,6 +1733,8 @@ package body Mia.Generator is
             Write_Handler (Fn);
          end if;
       end loop;
+
+      Write_Channels;
 
       Separator ("Register");
       Pl ("   procedure Register (Prefix : String := """") is");
@@ -1366,6 +1886,17 @@ package body Mia.Generator is
             end;
          end;
       end loop;
+      --  Register WebSocket channel factories at their URIs and describe
+      --  them in the OpenAPI document under "x-websockets".
+      for C of Spec.Channels loop
+         Pl ("      AWS.Net.WebSocket.Registry.Register");
+         Pl ("        (Prefix & ""/" & To_String (C.Path) & """,");
+         Pl ("         Create_" & To_String (C.Name) & "'Access);");
+         Pl ("      Mia.Registry.Register_Channel");
+         Pl ("        (" & Ada_Lit ("{""name"":""" & To_String (C.Name)
+             & """,""path"":""") & " & Prefix");
+         Pl ("         & " & Ada_Lit (Channel_Tail_Json (C)) & ");");
+      end loop;
       Pl ("   end Register;");
       Ada.Text_IO.New_Line (File);
       Pl ("end " & Pkg & ".Server;");
@@ -1459,6 +1990,7 @@ package body Mia.Generator is
       end Type_In_Pkg;
 
       --  True when any function returns this type (direct or array element)
+      --  or any channel emits it as a push payload
       function Type_Needs_To_Json (Full_Name : String) return Boolean is
          Short : constant String := Short_Name (Full_Name);
       begin
@@ -1471,10 +2003,22 @@ package body Mia.Generator is
                end if;
             end;
          end loop;
+         for C of Spec.Channels loop
+            for E of C.Emits loop
+               declare
+                  Pt : constant String := To_String (E.Payload_Type);
+               begin
+                  if Pt = Full_Name or else Pt = Short then
+                     return True;
+                  end if;
+               end;
+            end loop;
+         end loop;
          return False;
       end Type_Needs_To_Json;
 
-      --  True when any function takes this type as a parameter
+      --  True when any function or channel handler takes this type as a
+      --  parameter
       function Type_Needs_From_Json (Full_Name : String) return Boolean is
          Short : constant String := Short_Name (Full_Name);
       begin
@@ -1487,6 +2031,19 @@ package body Mia.Generator is
                      return True;
                   end if;
                end;
+            end loop;
+         end loop;
+         for C of Spec.Channels loop
+            for H of C.Handlers loop
+               for P of H.Parameters loop
+                  declare
+                     Pt : constant String := To_String (P.Type_Name);
+                  begin
+                     if Pt = Full_Name or else Pt = Short then
+                        return True;
+                     end if;
+                  end;
+               end loop;
             end loop;
          end loop;
          return False;
@@ -2200,12 +2757,13 @@ package body Mia.Generator is
                Pl ("with Ada.Strings.Fixed;");
             end if;
             --  Enum fields lowercase T'Image and reference T'Value.
+            --  The enum packages themselves are already withed by the
+            --  spec (they appear in field/accessor types), and the body
+            --  inherits the spec's context clause, so re-withing them
+            --  here would be redundant.
             if not Enum_Pkgs.Is_Empty then
                Pl ("with Ada.Characters.Handling;");
             end if;
-            for P of Enum_Pkgs loop
-               Pl ("with " & To_String (P) & ";");
-            end loop;
 
             Ada.Text_IO.New_Line (File);
             Pl ("package body " & Pkg_Name & " is");
@@ -2350,8 +2908,30 @@ package body Mia.Generator is
                                                 & F_Name & " (Self)'Image,"
                                                 & " Ada.Strings.Left)");
                               begin
-                                 Pl ("        " & Ada_Lit (Key)
-                                     & " & " & Val & " &");
+                                 if F.Omit_Empty then
+                                    --  The comma before each key is fixed
+                                    --  here, at generation time, so a key
+                                    --  that may be missing cannot open
+                                    --  the object.
+                                    if not Is_String_Field (F_Type) then
+                                       raise Generator_Error
+                                         with Type_Name & "." & F_Name
+                                         & ": Omit_Empty needs a String"
+                                         & " field";
+                                    elsif First_Field then
+                                       raise Generator_Error
+                                         with Type_Name & "." & F_Name
+                                         & ": Omit_Empty is not allowed"
+                                         & " on the first field";
+                                    end if;
+                                    Pl ("        (if " & F_Name
+                                        & " (Self) = """" then """""
+                                        & " else " & Ada_Lit (Key)
+                                        & " & " & Val & ") &");
+                                 else
+                                    Pl ("        " & Ada_Lit (Key)
+                                        & " & " & Val & " &");
+                                 end if;
                                  First_Field := False;
                               end;
                            end loop;
@@ -2503,7 +3083,7 @@ package body Mia.Generator is
       end loop;
 
       --  Generate the server dispatcher package
-      Write_Spec (Pkg, Output_Dir, File_Base);
+      Write_Spec (Spec, Pkg, Output_Dir, File_Base);
       Write_Body (Spec, Pkg, Output_Dir, File_Base);
    end Generate;
 

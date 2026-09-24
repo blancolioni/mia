@@ -32,6 +32,12 @@ package body Mia.Registry is
 
    Schemas : Schema_Vectors.Vector;
 
+   package String_Vectors is new Ada.Containers.Vectors
+     (Index_Type   => Positive,
+      Element_Type => Unbounded_String);
+
+   Channels : String_Vectors.Vector;
+
    -------------------
    -- Build_Swagger --
    -------------------
@@ -122,7 +128,25 @@ package body Mia.Registry is
                  & To_String (R.Result_Schema));
          Append (J, "}}}}}}");
       end loop;
-      Append (J, "}}");
+      Append (J, "}");
+      --  WebSocket channels: OpenAPI 3.0 has no native representation, so
+      --  expose them under an "x-websockets" vendor extension.
+      if not Channels.Is_Empty then
+         declare
+            First_Chan : Boolean := True;
+         begin
+            Append (J, "," & Q & "x-websockets" & Q & ":[");
+            for C of Channels loop
+               if not First_Chan then
+                  Append (J, ",");
+               end if;
+               First_Chan := False;
+               Append (J, To_String (C));
+            end loop;
+            Append (J, "]");
+         end;
+      end if;
+      Append (J, "}");
       return To_String (J);
    end Build_Swagger;
 
@@ -183,5 +207,14 @@ package body Mia.Registry is
             Allow_Anonymous => Allow_Anonymous,
             Body_Schema     => To_Unbounded_String (Body_Schema)));
    end Register_Route;
+
+   ----------------------
+   -- Register_Channel --
+   ----------------------
+
+   procedure Register_Channel (Channel : String) is
+   begin
+      String_Vectors.Append (Channels, To_Unbounded_String (Channel));
+   end Register_Channel;
 
 end Mia.Registry;

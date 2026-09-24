@@ -3,6 +3,7 @@ with AWS.Status;
 with GNATCOLL.JSON;
 with AWS.Messages;
 with Mia.Sessions;
+with Ada.Strings.Unbounded;
 with Concorde.Api.Factions;
 with Concorde.Api.Home;
 with Concorde.Api.Responses;
@@ -11,6 +12,11 @@ with Mia.Registry;
 with Mia.Server;
 
 package body Concorde_Api.Server is
+
+   type Session_Reference is
+     not null access all Concorde.Sessions.Session_Interface'Class;
+
+   Registered_Prefix : Ada.Strings.Unbounded.Unbounded_String;
 
    function Handle_Login
      (Session_Id : String;
@@ -89,8 +95,8 @@ package body Concorde_Api.Server is
       declare
          use GNATCOLL.JSON;
 
-         Session : constant not null access Concorde.Sessions.Session_Interface :=
-                     Concorde.Sessions.Session_Interface (Raw.all)'Access;
+         Session : constant Session_Reference :=
+                     Session_Reference (Raw);
          Command : constant String :=
                      Parameters.Value ("command");
          Result : constant String :=
@@ -130,8 +136,8 @@ package body Concorde_Api.Server is
             AWS.Messages.S401);
       end if;
       declare
-         Session : constant not null access Concorde.Sessions.Session_Interface :=
-                     Concorde.Sessions.Session_Interface (Raw.all)'Access;
+         Session : constant Session_Reference :=
+                     Session_Reference (Raw);
          Faction_Name : constant String :=
                      Parameters.Value ("faction_name");
          Result : constant Concorde.Api.Responses.Faction_Record :=
@@ -139,7 +145,8 @@ package body Concorde_Api.Server is
       begin
          declare
             S : constant String :=
-                     Concorde.Api.Responses.To_Json (Result);
+                     Concorde.Api.Responses.To_Json (Result,
+                       Ada.Strings.Unbounded.To_String (Registered_Prefix));
          begin
             return AWS.Response.Build
               ("application/json", S);
@@ -169,15 +176,17 @@ package body Concorde_Api.Server is
             AWS.Messages.S401);
       end if;
       declare
-         Session : constant not null access Concorde.Sessions.Session_Interface'Class :=
-                     Concorde.Sessions.Session_Interface'Class (Raw.all)'Access;
+         Session : constant Session_Reference :=
+                     Session_Reference (Raw);
          Items : GNATCOLL.JSON.JSON_Array;
 
          procedure Cb (Element : Concorde.Api.Responses.Faction_Record) is
          begin
             GNATCOLL.JSON.Append
               (Items,
-               GNATCOLL.JSON.Read (Concorde.Api.Responses.To_Json (Element)));
+               GNATCOLL.JSON.Read
+                 (Concorde.Api.Responses.To_Json (Element,
+                  Ada.Strings.Unbounded.To_String (Registered_Prefix))));
          end Cb;
       begin
          Concorde.Api.Factions.Scan_All_Factions (Session, Cb'Access);
@@ -198,6 +207,11 @@ package body Concorde_Api.Server is
 
    procedure Register (Prefix : String := "") is
    begin
+      Registered_Prefix :=
+        Ada.Strings.Unbounded.To_Unbounded_String (Prefix);
+      Mia.Registry.Register_Schema
+        ("Faction_Record",
+         "{""type"":""object"",""properties"":{""identifier"":{""type"":""string""},""name"":{""type"":""string""},""adjective"":{""type"":""string""},""plural"":{""type"":""string""},""_links"":{""type"":""object"",""properties"":{""self"":{""type"":""object"",""properties"":{""href"":{""type"":""string""}}}}}}}");
       Mia.Server.Register
         (Route           => Prefix & "/login",
          Handler         => Handle_Login'Access,
@@ -232,7 +246,7 @@ package body Concorde_Api.Server is
          Method      => "get",
          Operation   => "Get_Faction",
          Path_Params     => "[{""name"":""faction_name"",""in"":""path"",""required"":true,""schema"":{""type"":""string""}}]",
-         Result_Schema   => "{""type"":""object"",""properties"":{""identifier"":{""type"":""string""},""name"":{""type"":""string""},""adjective"":{""type"":""string""},""plural"":{""type"":""string""}}}",
+         Result_Schema   => "{""$ref"":""#/components/schemas/Faction_Record""}",
          Allow_Anonymous => False);
       Mia.Server.Register
         (Route           => Prefix & "/factions",
@@ -244,7 +258,7 @@ package body Concorde_Api.Server is
          Method      => "get",
          Operation   => "Get_All_Factions",
          Path_Params     => "[]",
-         Result_Schema   => "{""type"":""array"",""items"":{""type"":""object"",""properties"":{""identifier"":{""type"":""string""},""name"":{""type"":""string""},""adjective"":{""type"":""string""},""plural"":{""type"":""string""}}}}",
+         Result_Schema   => "{""type"":""array"",""items"":{""$ref"":""#/components/schemas/Faction_Record""}}",
          Allow_Anonymous => False);
    end Register;
 

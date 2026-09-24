@@ -218,6 +218,21 @@ package body Mia.Parser is
                Expect (Tok_Colon);
                F.Type_Name :=
                  To_Unbounded_String (Expect_Identifier);
+               if Peek (L).Kind = Tok_With then
+                  Consume (L);
+                  declare
+                     Key : constant String := Expect_Identifier;
+                  begin
+                     if Ada.Characters.Handling.To_Lower (Key)
+                       = "omit_empty"
+                     then
+                        F.Omit_Empty := True;
+                     else
+                        raise Parse_Error
+                          with "unknown field aspect: " & Key;
+                     end if;
+                  end;
+               end if;
                T.Fields.Append (F);
                Expect (Tok_Semicolon);
             end;
@@ -435,6 +450,142 @@ package body Mia.Parser is
          end;
       end Parse_Links;
 
+      --  Parse a channel handler: on NAME [ (params) ] with Impl => NAME
+      function Parse_Channel_Handler return Function_Spec is
+         F : Function_Spec;
+      begin
+         F.Name := To_Unbounded_String (Expect_Identifier);
+         if Peek (L).Kind = Tok_Left_Paren then
+            Consume (L);
+            F.Parameters.Append (Parse_Param);
+            while Peek (L).Kind = Tok_Semicolon loop
+               Consume (L);
+               F.Parameters.Append (Parse_Param);
+            end loop;
+            Expect (Tok_Right_Paren);
+         end if;
+         Expect (Tok_With);
+         loop
+            declare
+               Key   : constant String := Expect_Identifier;
+               Lower : constant String :=
+                         Ada.Characters.Handling.To_Lower (Key);
+            begin
+               Expect (Tok_Arrow);
+               declare
+                  Val : constant String := Parse_Aspect_Value;
+               begin
+                  if Lower = "impl" then
+                     F.Impl := To_Unbounded_String (Val);
+                  else
+                     raise Parse_Error
+                       with "unknown channel handler aspect: " & Key;
+                  end if;
+               end;
+            end;
+            exit when Peek (L).Kind /= Tok_Comma;
+            Consume (L);
+         end loop;
+         if Length (F.Impl) = 0 then
+            raise Parse_Error
+              with "channel handler '" & To_String (F.Name)
+                   & "' requires Impl aspect";
+         end if;
+         return F;
+      end Parse_Channel_Handler;
+
+      --  Parse a channel body: emit / on / on_open / on_close / on_error
+      function Parse_Channel return Channel_Spec is
+         C : Channel_Spec;
+      begin
+         C.Name := To_Unbounded_String (Expect_Identifier);
+         if Peek (L).Kind = Tok_With then
+            Consume (L);
+            loop
+               declare
+                  Key   : constant String := Expect_Identifier;
+                  Lower : constant String :=
+                            Ada.Characters.Handling.To_Lower (Key);
+               begin
+                  Expect (Tok_Arrow);
+                  declare
+                     Val : constant String := Parse_Aspect_Value;
+                  begin
+                     if Lower = "path" then
+                        C.Path := To_Unbounded_String (Val);
+                     elsif Lower = "auth" then
+                        declare
+                           Auth_Lower : constant String :=
+                                          Ada.Characters.Handling.To_Lower
+                                            (Val);
+                        begin
+                           if Auth_Lower = "anonymous" then
+                              C.Auth := Anonymous;
+                           elsif Auth_Lower = "required"
+                             or else Auth_Lower = "inherited"
+                           then
+                              C.Auth := Inherited;
+                           else
+                              raise Parse_Error
+                                with "unknown auth value: " & Val;
+                           end if;
+                        end;
+                     else
+                        raise Parse_Error
+                          with "unknown channel aspect: " & Key;
+                     end if;
+                  end;
+               end;
+               exit when Peek (L).Kind /= Tok_Comma;
+               Consume (L);
+            end loop;
+         end if;
+         Expect (Tok_Is);
+         while Peek (L).Kind = Tok_Identifier loop
+            declare
+               Word  : constant String := Expect_Identifier;
+               Lower : constant String :=
+                         Ada.Characters.Handling.To_Lower (Word);
+            begin
+               if Lower = "emit" then
+                  declare
+                     E : Emit_Spec;
+                  begin
+                     E.Name := To_Unbounded_String (Expect_Identifier);
+                     Expect (Tok_Colon);
+                     E.Payload_Type := To_Unbounded_String (Parse_Name);
+                     C.Emits.Append (E);
+                  end;
+               elsif Lower = "on_open" then
+                  C.On_Open := To_Unbounded_String (Parse_Name);
+               elsif Lower = "on_close" then
+                  C.On_Close := To_Unbounded_String (Parse_Name);
+               elsif Lower = "on_error" then
+                  C.On_Error := To_Unbounded_String (Parse_Name);
+               elsif Lower = "on" then
+                  C.Handlers.Append (Parse_Channel_Handler);
+               else
+                  raise Parse_Error
+                    with "line" & Peek (L).Line'Image
+                         & ": expected 'emit', 'on', 'on_open',"
+                         & " 'on_close', 'on_error' or 'end' in channel";
+               end if;
+               Expect (Tok_Semicolon);
+            end;
+         end loop;
+         Expect (Tok_End);
+         declare
+            End_Name : constant String := Expect_Identifier;
+         begin
+            if End_Name /= To_String (C.Name) then
+               raise Parse_Error
+                 with "channel end name '" & End_Name
+                      & "' does not match '" & To_String (C.Name) & "'";
+            end if;
+         end;
+         return C;
+      end Parse_Channel;
+
       procedure Parse_Package_Aspects (Spec : in out Package_Spec) is
       begin
          loop
@@ -475,8 +626,11 @@ package body Mia.Parser is
       while Peek (L).Kind = Tok_Function
         or else Peek (L).Kind = Tok_Type
         or else (Peek (L).Kind = Tok_Identifier
-                 and then Ada.Characters.Handling.To_Lower
-                            (To_String (Peek (L).Text)) = "links")
+                 and then (Ada.Characters.Handling.To_Lower
+                             (To_String (Peek (L).Text)) = "links"
+                           or else Ada.Characters.Handling.To_Lower
+                                     (To_String (Peek (L).Text))
+                                   = "channel"))
       loop
          if Peek (L).Kind = Tok_Function then
             Consume (L);
@@ -484,6 +638,11 @@ package body Mia.Parser is
          elsif Peek (L).Kind = Tok_Type then
             Consume (L);
             Result.Types.Append (Parse_Type_Decl);
+         elsif Ada.Characters.Handling.To_Lower
+                 (To_String (Peek (L).Text)) = "channel"
+         then
+            Consume (L);  --  consume 'channel'
+            Result.Channels.Append (Parse_Channel);
          else
             Consume (L);  --  consume 'links'
             Parse_Links (Result);

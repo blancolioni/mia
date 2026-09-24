@@ -24,6 +24,11 @@ package Mia.Server is
       Method          : AWS.Status.Request_Method := AWS.Status.GET;
       Allow_Anonymous : Boolean := True);
 
+   function Session_Id_Of (Request : AWS.Status.Data) return String;
+   --  Extract the session id from a request: the bearer token of the
+   --  Authorization header, or the "token" query parameter (browsers
+   --  cannot set headers on a WebSocket handshake).
+
    procedure Start
      (Port         : Positive := 8080;
       Service_Name : String   := "mia-server");
