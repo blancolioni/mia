@@ -1530,7 +1530,12 @@ package body Mia.Generator is
                      Pl ("     (Session_Id : String;");
                      Pl ("      Payload    : " & Payload & ")");
                      Pl ("   is");
-                     Pl ("      Msg : constant String := " & To_J & ";");
+                     --  The wire form the "x-websockets" catalogue
+                     --  documents: the event's name, and its payload.
+                     Pl ("      Msg : constant String :=");
+                     Pl ("        ""{""""event"""":""""" & EN
+                         & """"",""""data"""":"" & " & To_J
+                         & " & ""}"";");
                      Pl ("      Ids : constant " & CN & "_UID_Sets.Set :=");
                      Pl ("              " & CN
                          & "_Clients.Targets (Session_Id);");
