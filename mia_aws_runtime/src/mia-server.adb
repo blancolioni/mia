@@ -354,6 +354,11 @@ package body Mia.Server is
       AWS.Config.Set.Server_Name (Config, Service_Name);
       AWS.Config.Set.Server_Port (Config, Port);
 
+      --  So that a server restarted on the same port can bind it at once,
+      --  while the old one's connections are still in TIME-WAIT, rather
+      --  than failing until they have gone, a minute or so later (#2).
+      AWS.Config.Set.Reuse_Address (Config, True);
+
       AWS.Server.Start (WS, Service'Access, Config);
       --  Start the WebSocket sender/receiver tasks so registered
       --  channel factories can accept upgrades and push messages.
