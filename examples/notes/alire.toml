@@ -12,4 +12,4 @@ tags = ["mia", "api"]
 executables = ["notes"]
 
 [[depends-on]]
-aws = "=24.0.0"
+aws = "=25.2.0"
