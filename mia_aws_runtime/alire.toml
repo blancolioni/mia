@@ -10,7 +10,7 @@ website = ""
 tags = ["aws", "rest", "api"]
 
 [[depends-on]]
-aws = "=24.0.0"
+aws = "=25.2.0"
 
 [build-switches]
 "*".ada_version = "ada2022"
@@ -20,4 +20,4 @@ development.contracts = "yes"
 "*".compile_checks = "errors"
 
 [[depends-on]]
-gnatcoll = "^24.0.0"
+gnatcoll = "^25.0.0"

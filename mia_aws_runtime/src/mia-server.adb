@@ -345,7 +345,8 @@ package body Mia.Server is
 
    procedure Start
      (Port         : Positive := 8080;
-      Service_Name : String   := "mia-server")
+      Service_Name : String   := "mia-server";
+      Host         : String   := "")
    is
       Config : AWS.Config.Object := AWS.Config.Get_Current;
    begin
@@ -358,6 +359,18 @@ package body Mia.Server is
       --  while the old one's connections are still in TIME-WAIT, rather
       --  than failing until they have gone, a minute or so later (#2).
       AWS.Config.Set.Reuse_Address (Config, True);
+
+      if Host /= "" then
+         AWS.Config.Set.Server_Host (Config, Host);
+      end if;
+
+      --  HTTP/1.1 only.  Nothing needs HTTP/2 here: a proxy in front of the
+      --  server speaks HTTP/1.1 to it.  And with HTTP/2 on, AWS answers a
+      --  request line it cannot parse -- a scanner's, or a TLS handshake
+      --  sent to a plain port -- with an HTTP/2 GoAway frame, which
+      --  AWS 24.0.0 sent unguarded: if the client had gone, the socket
+      --  error killed one of the server's few connection slots for good.
+      AWS.Config.Set.HTTP2_Activated (Config, False);
 
       AWS.Server.Start (WS, Service'Access, Config);
       --  Start the WebSocket sender/receiver tasks so registered

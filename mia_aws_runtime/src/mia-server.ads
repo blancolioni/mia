@@ -29,9 +29,13 @@ package Mia.Server is
    --  Authorization header, or the "token" query parameter (browsers
    --  cannot set headers on a WebSocket handshake).
 
+   --  Serve on Port, at the address Host: every address if Host is
+   --  empty, or only, say, "127.0.0.1", for a server reached through a
+   --  proxy on the same machine and from nowhere else.
    procedure Start
      (Port         : Positive := 8080;
-      Service_Name : String   := "mia-server");
+      Service_Name : String   := "mia-server";
+      Host         : String   := "");
    procedure Stop (Message : String);
 
 private
